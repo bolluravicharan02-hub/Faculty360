@@ -1,0 +1,2793 @@
+import { Router, Request, Response } from 'express';
+import { eq, and, desc, sql, ilike, or, ne } from 'drizzle-orm';
+import { db } from '../src/db/index.ts';
+import * as schema from '../src/db/schema.ts';
+import { adminAuth } from '../src/lib/firebase-admin.ts';
+import { CandidateFaculty, LeaveRequest, TimetableSlot, AlternativeClassAssignment, UserProfile, Role } from '../src/types.ts';
+import { authenticateToken, optionalAuth, requireRole, generateToken, AuthRequest, AuthenticatedUser } from './auth.ts';
+
+export const apiRouter = Router();
+
+// Helper to format UserProfile for frontend
+function formatUserProfile(u: typeof schema.users.$inferSelect): UserProfile {
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    role: u.role as Role,
+    facultyId: u.facultyId || undefined,
+    departmentId: u.departmentId || undefined,
+    departmentName: u.departmentName || undefined,
+    designation: u.designation || undefined,
+    avatarUrl: u.avatarUrl || undefined,
+    phone: u.phone || undefined,
+    leaveBalance: {
+      casual: u.leaveCasual,
+      medical: u.leaveMedical,
+      earned: u.leaveEarned,
+      total: u.leaveTotal,
+    },
+  };
+}
+
+// Helper to log audit actions to PostgreSQL
+async function logAuditAction(
+  userId: string,
+  userName: string,
+  action: string,
+  module: 'AUTH' | 'LEAVE' | 'TIMETABLE' | 'SUBSTITUTION' | 'FACULTY' | 'SYSTEM' | 'ACADEMIC_INFRASTRUCTURE',
+  details: string,
+  metadata?: any
+) {
+  try {
+    await db.insert(schema.auditLogs).values({
+      id: `audit-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      userId,
+      userName,
+      action,
+      module,
+      details,
+      metadata: metadata || null,
+    });
+  } catch (err) {
+    console.error('Failed to log audit action:', err);
+  }
+}
+
+// ==========================================
+// 1. AUTHENTICATION & ROLE SWITCHING
+// ==========================================
+
+apiRouter.post('/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password, roleHint, idToken } = req.body;
+
+    let uid: string | undefined;
+
+    // Verify Firebase token if provided
+    if (idToken) {
+      try {
+        const decoded = await adminAuth.verifyIdToken(idToken);
+        uid = decoded.uid;
+      } catch (err) {
+        console.warn('Firebase ID token verification failed:', err);
+      }
+    }
+
+    // 1. Look up user by email or demo shortcut
+    let user: any = null;
+    const cleanEmail = (email || '').toLowerCase().trim();
+    if (cleanEmail === 'admin@faculty360.demo') {
+      [user] = await db.select().from(schema.users).where(eq(schema.users.id, 'usr-admin'));
+    } else if (cleanEmail === 'hod@faculty360.demo') {
+      [user] = await db.select().from(schema.users).where(eq(schema.users.id, 'usr-rajesh'));
+      if (user && user.role !== 'HOD') {
+        await db.update(schema.users).set({ role: 'HOD', designation: 'Assoc. Professor & HOD' }).where(eq(schema.users.id, 'usr-rajesh'));
+        user.role = 'HOD';
+        user.designation = 'Assoc. Professor & HOD';
+      }
+    } else if (cleanEmail === 'faculty@faculty360.demo') {
+      [user] = await db.select().from(schema.users).where(eq(schema.users.id, 'usr-arun'));
+    } else {
+      [user] = await db
+        .select()
+        .from(schema.users)
+        .where(ilike(schema.users.email, cleanEmail));
+    }
+
+    // 2. Fallback to demo role accounts if requested
+    if (!user && roleHint) {
+      const targetRole = roleHint === 'Admin' ? 'ADMIN' : roleHint === 'HOD' ? 'HOD' : 'FACULTY';
+      const [roleUser] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.role, targetRole))
+        .limit(1);
+      user = roleUser;
+    }
+
+    // 3. Demo Role Switcher capability for Dr. Rajesh Sharma
+    if (user && roleHint) {
+      if (roleHint === 'Faculty' && user.id === 'usr-rajesh' && user.role !== 'FACULTY') {
+        await db
+          .update(schema.users)
+          .set({ role: 'FACULTY', designation: 'Assoc. Professor, Computer Science' })
+          .where(eq(schema.users.id, 'usr-rajesh'));
+        user.role = 'FACULTY';
+        user.designation = 'Assoc. Professor, Computer Science';
+      } else if (roleHint === 'HOD' && user.id === 'usr-rajesh' && user.role !== 'HOD') {
+        await db
+          .update(schema.users)
+          .set({ role: 'HOD', designation: 'Assoc. Professor & HOD' })
+          .where(eq(schema.users.id, 'usr-rajesh'));
+        user.role = 'HOD';
+        user.designation = 'Assoc. Professor & HOD';
+      }
+    }
+
+    // 4. If user not yet in DB, create user
+    if (!user) {
+      if (email && email.includes('@')) {
+        const newId = `usr-${Date.now()}`;
+        const newName = email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+        const role = roleHint === 'Admin' ? 'ADMIN' : roleHint === 'HOD' ? 'HOD' : 'FACULTY';
+
+        const [created] = await db
+          .insert(schema.users)
+          .values({
+            id: newId,
+            uid: uid || null,
+            email: email.toLowerCase(),
+            name: newName,
+            role,
+            departmentId: 'dept-cse',
+            departmentName: 'Department of Computer Science & Engineering',
+            designation: 'Faculty Member',
+            avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+            leaveCasual: 6,
+            leaveMedical: 4,
+            leaveEarned: 2,
+            leaveTotal: 12,
+          })
+          .returning();
+        user = created;
+      } else {
+        return res.status(401).json({ error: 'Invalid university credentials' });
+      }
+    }
+
+    // Update UID if newly authenticated
+    if (uid && user && !user.uid) {
+      await db.update(schema.users).set({ uid }).where(eq(schema.users.id, user.id));
+      user.uid = uid;
+    }
+
+    const authPayload: AuthenticatedUser = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role as Role,
+      facultyId: user.facultyId || undefined,
+      departmentId: user.departmentId || undefined,
+      departmentName: user.departmentName || undefined,
+      designation: user.designation || undefined,
+    };
+
+    const token = generateToken(authPayload);
+
+    await logAuditAction(user.id, user.name, 'USER_LOGIN', 'AUTH', `User logged in with role ${user.role}`);
+
+    return res.json({
+      token,
+      user: formatUserProfile(user),
+    });
+  } catch (err: any) {
+    console.error('Error during login:', err);
+    res.status(500).json({ error: 'Internal server error during authentication' });
+  }
+});
+
+// Demo Role Switching Endpoint - provides a signed token for target role
+apiRouter.post('/auth/switch-role', async (req: Request, res: Response) => {
+  try {
+    const { targetRole } = req.body; // 'ADMIN' | 'HOD' | 'FACULTY'
+    const role = (targetRole || 'FACULTY').toUpperCase() as Role;
+
+    let targetUser: typeof schema.users.$inferSelect | undefined;
+
+    if (role === 'ADMIN') {
+      [targetUser] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, 'usr-admin'));
+    } else if (role === 'HOD') {
+      [targetUser] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, 'usr-rajesh'));
+      if (targetUser && targetUser.role !== 'HOD') {
+        await db
+          .update(schema.users)
+          .set({ role: 'HOD', designation: 'Assoc. Professor & HOD' })
+          .where(eq(schema.users.id, 'usr-rajesh'));
+        targetUser.role = 'HOD';
+        targetUser.designation = 'Assoc. Professor & HOD';
+      }
+    } else {
+      // FACULTY
+      [targetUser] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, 'usr-arun'));
+
+      if (!targetUser) {
+        [targetUser] = await db
+          .select()
+          .from(schema.users)
+          .where(eq(schema.users.role, 'FACULTY'))
+          .limit(1);
+      }
+    }
+
+    if (!targetUser) {
+      // Fallback: any user
+      [targetUser] = await db.select().from(schema.users).limit(1);
+    }
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'No user available for role' });
+    }
+
+    const authPayload: AuthenticatedUser = {
+      id: targetUser.id,
+      email: targetUser.email,
+      name: targetUser.name,
+      role: role,
+      facultyId: targetUser.facultyId || undefined,
+      departmentId: targetUser.departmentId || undefined,
+      departmentName: targetUser.departmentName || undefined,
+      designation: targetUser.designation || undefined,
+    };
+
+    const token = generateToken(authPayload);
+
+    await logAuditAction(
+      targetUser.id,
+      targetUser.name,
+      'ROLE_SWITCH',
+      'AUTH',
+      `Switched active session to role ${role}`
+    );
+
+    return res.json({
+      token,
+      user: {
+        ...formatUserProfile(targetUser),
+        role,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error switching role:', err);
+    res.status(500).json({ error: 'Failed to switch role session' });
+  }
+});
+
+apiRouter.get('/auth/me', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthenticated' });
+    }
+
+    const [user] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, req.user.id));
+
+    if (user) {
+      return res.json({
+        ...formatUserProfile(user),
+        role: req.user.role || user.role, // Reflect current token role
+      });
+    }
+
+    // Return token user info if DB user row is not yet found
+    return res.json({
+      id: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      departmentName: req.user.departmentName || 'Department of Computer Science & Engineering',
+      designation: req.user.designation || 'Faculty Member',
+      leaveBalance: { casual: 6, medical: 4, earned: 2, total: 12 },
+    });
+  } catch (err: any) {
+    console.error('Error fetching current user:', err);
+    res.status(500).json({ error: 'Failed to fetch user profile' });
+  }
+});
+
+// ==========================================
+// 2. DEPARTMENTS & FACULTY MANAGEMENT
+// ==========================================
+
+apiRouter.get('/departments', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const list = await db
+      .select()
+      .from(schema.departments)
+      .orderBy(schema.departments.name);
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching departments:', err);
+    res.status(500).json({ error: 'Failed to fetch departments' });
+  }
+});
+
+apiRouter.post('/departments', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { code, name, hodName, facultyCount } = req.body;
+    if (!code || !name) {
+      return res.status(400).json({ error: 'Department code and name are required' });
+    }
+    const id = `dept-${code.toLowerCase().replace(/[^a-z0-9]/g, '')}-${Date.now()}`;
+    const [dept] = await db
+      .insert(schema.departments)
+      .values({
+        id,
+        code: code.toUpperCase().trim(),
+        name: name.trim(),
+        hodName: hodName || 'To Be Appointed',
+        facultyCount: Number(facultyCount) || 0,
+        attendanceRate: 95,
+      })
+      .returning();
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'CREATE_DEPARTMENT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Created department ${name} (${code})`
+    );
+
+    res.status(201).json(dept);
+  } catch (err: any) {
+    console.error('Error creating department:', err);
+    res.status(500).json({ error: err.message || 'Failed to create department' });
+  }
+});
+
+apiRouter.put('/departments/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, hodName, facultyCount, attendanceRate } = req.body;
+
+    const [updated] = await db
+      .update(schema.departments)
+      .set({
+        ...(name && { name: name.trim() }),
+        ...(hodName !== undefined && { hodName: hodName.trim() }),
+        ...(facultyCount !== undefined && { facultyCount: Number(facultyCount) }),
+        ...(attendanceRate !== undefined && { attendanceRate: Number(attendanceRate) }),
+      })
+      .where(eq(schema.departments.id, id))
+      .returning();
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'UPDATE_DEPARTMENT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Updated department ${updated.name}`
+    );
+
+    res.json(updated);
+  } catch (err: any) {
+    console.error('Error updating department:', err);
+    res.status(500).json({ error: 'Failed to update department' });
+  }
+});
+
+apiRouter.delete('/departments/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(schema.departments)
+      .where(eq(schema.departments.id, id))
+      .returning();
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'DELETE_DEPARTMENT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Deleted department ${deleted.name}`
+    );
+
+    res.json({ success: true, message: 'Department deleted successfully' });
+  } catch (err: any) {
+    console.error('Error deleting department:', err);
+    res.status(500).json({ error: 'Failed to delete department' });
+  }
+});
+
+// ==========================================
+// SUBJECTS MANAGEMENT
+// ==========================================
+apiRouter.get('/subjects', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const { department, semester, type, search } = req.query;
+    let queryBuilder = db.select().from(schema.subjects);
+    const conditions = [];
+
+    if (department && department !== 'All') {
+      conditions.push(
+        or(
+          eq(schema.subjects.departmentId, String(department)),
+          ilike(schema.subjects.departmentName, `%${department}%`)
+        )
+      );
+    }
+    if (semester && semester !== 'All') {
+      conditions.push(eq(schema.subjects.semester, String(semester)));
+    }
+    if (type && type !== 'All') {
+      conditions.push(eq(schema.subjects.type, String(type)));
+    }
+    if (search) {
+      const q = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(schema.subjects.code, q),
+          ilike(schema.subjects.name, q),
+          ilike(schema.subjects.departmentName, q)
+        )
+      );
+    }
+
+    const list = conditions.length > 0
+      ? await queryBuilder.where(and(...conditions)).orderBy(schema.subjects.code)
+      : await queryBuilder.orderBy(schema.subjects.code);
+
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching subjects:', err);
+    res.status(500).json({ error: 'Failed to fetch subjects catalog' });
+  }
+});
+
+apiRouter.post('/subjects', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { code, name, departmentId, departmentName, credits, semester, type, weeklyHours, syllabusSummary } = req.body;
+    if (!code || !name || !semester) {
+      return res.status(400).json({ error: 'Subject code, name, and semester are required' });
+    }
+
+    const id = `sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const [sub] = await db
+      .insert(schema.subjects)
+      .values({
+        id,
+        code: code.toUpperCase().trim(),
+        name: name.trim(),
+        departmentId: departmentId || 'dept-cse',
+        departmentName: departmentName || 'Department of Computer Science & Engineering',
+        credits: Number(credits) || 4,
+        semester: semester.trim(),
+        type: type || 'Core',
+        weeklyHours: Number(weeklyHours) || 4,
+        syllabusSummary: syllabusSummary || null,
+      })
+      .returning();
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'CREATE_SUBJECT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Created subject ${name} (${code})`
+    );
+
+    res.status(201).json(sub);
+  } catch (err: any) {
+    console.error('Error creating subject:', err);
+    res.status(500).json({ error: err.message || 'Failed to create subject' });
+  }
+});
+
+apiRouter.put('/subjects/:id', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { code, name, departmentId, departmentName, credits, semester, type, weeklyHours, syllabusSummary } = req.body;
+
+    const [updated] = await db
+      .update(schema.subjects)
+      .set({
+        ...(code && { code: code.toUpperCase().trim() }),
+        ...(name && { name: name.trim() }),
+        ...(departmentId && { departmentId }),
+        ...(departmentName && { departmentName }),
+        ...(credits !== undefined && { credits: Number(credits) }),
+        ...(semester && { semester: semester.trim() }),
+        ...(type && { type }),
+        ...(weeklyHours !== undefined && { weeklyHours: Number(weeklyHours) }),
+        ...(syllabusSummary !== undefined && { syllabusSummary }),
+      })
+      .where(eq(schema.subjects.id, id))
+      .returning();
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'UPDATE_SUBJECT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Updated subject ${updated.name} (${updated.code})`
+    );
+
+    res.json(updated);
+  } catch (err: any) {
+    console.error('Error updating subject:', err);
+    res.status(500).json({ error: 'Failed to update subject' });
+  }
+});
+
+apiRouter.delete('/subjects/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(schema.subjects)
+      .where(eq(schema.subjects.id, id))
+      .returning();
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'DELETE_SUBJECT',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Deleted subject ${deleted.name} (${deleted.code})`
+    );
+
+    res.json({ success: true, message: 'Subject deleted successfully' });
+  } catch (err: any) {
+    console.error('Error deleting subject:', err);
+    res.status(500).json({ error: 'Failed to delete subject' });
+  }
+});
+
+// ==========================================
+// CLASSROOMS & VENUES MANAGEMENT
+// ==========================================
+apiRouter.get('/classrooms', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const { building, type, status, search } = req.query;
+    let queryBuilder = db.select().from(schema.classrooms);
+    const conditions = [];
+
+    if (building && building !== 'All') {
+      conditions.push(ilike(schema.classrooms.building, `%${building}%`));
+    }
+    if (type && type !== 'All') {
+      conditions.push(eq(schema.classrooms.type, String(type)));
+    }
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.classrooms.status, String(status)));
+    }
+    if (search) {
+      const q = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(schema.classrooms.roomNumber, q),
+          ilike(schema.classrooms.building, q),
+          ilike(schema.classrooms.type, q)
+        )
+      );
+    }
+
+    const list = conditions.length > 0
+      ? await queryBuilder.where(and(...conditions)).orderBy(schema.classrooms.roomNumber)
+      : await queryBuilder.orderBy(schema.classrooms.roomNumber);
+
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching classrooms:', err);
+    res.status(500).json({ error: 'Failed to fetch classrooms' });
+  }
+});
+
+apiRouter.post('/classrooms', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { roomNumber, building, floor, capacity, type, facilities, status } = req.body;
+    if (!roomNumber || !building) {
+      return res.status(400).json({ error: 'Room number and building are required' });
+    }
+
+    const id = `cls-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const [venue] = await db
+      .insert(schema.classrooms)
+      .values({
+        id,
+        roomNumber: roomNumber.trim(),
+        building: building.trim(),
+        floor: Number(floor) || 1,
+        capacity: Number(capacity) || 60,
+        type: type || 'Smart Lecture Hall',
+        facilities: facilities || ['Projector', 'Air Conditioning', 'Audio System'],
+        status: status || 'Available',
+      })
+      .returning();
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'CREATE_CLASSROOM',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Registered classroom ${roomNumber} in ${building}`
+    );
+
+    res.status(201).json(venue);
+  } catch (err: any) {
+    console.error('Error creating classroom:', err);
+    res.status(500).json({ error: err.message || 'Failed to create classroom' });
+  }
+});
+
+apiRouter.put('/classrooms/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { roomNumber, building, floor, capacity, type, facilities, status } = req.body;
+
+    const [updated] = await db
+      .update(schema.classrooms)
+      .set({
+        ...(roomNumber && { roomNumber: roomNumber.trim() }),
+        ...(building && { building: building.trim() }),
+        ...(floor !== undefined && { floor: Number(floor) }),
+        ...(capacity !== undefined && { capacity: Number(capacity) }),
+        ...(type && { type }),
+        ...(facilities !== undefined && { facilities }),
+        ...(status && { status }),
+      })
+      .where(eq(schema.classrooms.id, id))
+      .returning();
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Classroom not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'UPDATE_CLASSROOM',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Updated classroom ${updated.roomNumber}`
+    );
+
+    res.json(updated);
+  } catch (err: any) {
+    console.error('Error updating classroom:', err);
+    res.status(500).json({ error: 'Failed to update classroom' });
+  }
+});
+
+apiRouter.delete('/classrooms/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(schema.classrooms)
+      .where(eq(schema.classrooms.id, id))
+      .returning();
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Classroom not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'DELETE_CLASSROOM',
+      'ACADEMIC_INFRASTRUCTURE',
+      `Deleted classroom ${deleted.roomNumber}`
+    );
+
+    res.json({ success: true, message: 'Classroom deleted successfully' });
+  } catch (err: any) {
+    console.error('Error deleting classroom:', err);
+    res.status(500).json({ error: 'Failed to delete classroom' });
+  }
+});
+
+// ==========================================
+// LEAVE TYPES
+// ==========================================
+apiRouter.get('/leave-types', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const list = await db.select().from(schema.leaveTypes).orderBy(schema.leaveTypes.name);
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching leave types:', err);
+    res.status(500).json({ error: 'Failed to fetch leave types' });
+  }
+});
+
+// ==========================================
+// ATTENDANCE & FACULTY REGISTRY
+// ==========================================
+apiRouter.get('/attendance', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const list = await db.select().from(schema.faculty).orderBy(schema.faculty.name);
+    const presentCount = list.filter((f) => f.status === 'Present').length;
+    const inLectureCount = list.filter((f) => f.status === 'In Lecture').length;
+    const onLeaveCount = list.filter((f) => f.status === 'On Leave').length;
+    const absentCount = list.filter((f) => f.status === 'Absent').length;
+
+    res.json({
+      summary: {
+        totalFaculty: list.length,
+        presentToday: presentCount + inLectureCount,
+        inLecture: inLectureCount,
+        onLeave: onLeaveCount,
+        absent: absentCount,
+        attendanceRate: 95.8,
+      },
+      records: list,
+    });
+  } catch (err: any) {
+    console.error('Error fetching faculty attendance:', err);
+    res.status(500).json({ error: 'Failed to fetch faculty attendance' });
+  }
+});
+
+apiRouter.get('/faculty', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const { department, status, query } = req.query;
+
+    let queryBuilder = db.select().from(schema.faculty);
+
+    const conditions = [];
+    if (department && department !== 'All') {
+      conditions.push(ilike(schema.faculty.department, `%${department}%`));
+    }
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.faculty.status, String(status)));
+    }
+    if (query) {
+      const q = `%${query}%`;
+      conditions.push(
+        or(
+          ilike(schema.faculty.name, q),
+          ilike(schema.faculty.facultyId, q),
+          ilike(schema.faculty.department, q)
+        )
+      );
+    }
+
+    const results = conditions.length > 0
+      ? await queryBuilder.where(and(...conditions)).orderBy(schema.faculty.name)
+      : await queryBuilder.orderBy(schema.faculty.name);
+
+    res.json(results);
+  } catch (err: any) {
+    console.error('Error fetching faculty:', err);
+    res.status(500).json({ error: 'Failed to fetch faculty directory' });
+  }
+});
+
+apiRouter.get('/faculty/:id', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const [fac] = await db
+      .select()
+      .from(schema.faculty)
+      .where(or(eq(schema.faculty.id, id), eq(schema.faculty.facultyId, id)));
+
+    if (!fac) {
+      return res.status(404).json({ error: 'Faculty member not found' });
+    }
+
+    const timetable = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(eq(schema.timetableSlots.facultyId, fac.id));
+
+    const leaves = await db
+      .select()
+      .from(schema.leaveRequests)
+      .where(eq(schema.leaveRequests.facultyId, fac.id))
+      .orderBy(desc(schema.leaveRequests.appliedAt));
+
+    res.json({
+      ...fac,
+      timetable,
+      leaves,
+    });
+  } catch (err: any) {
+    console.error('Error fetching faculty profile:', err);
+    res.status(500).json({ error: 'Failed to fetch faculty profile' });
+  }
+});
+
+// Admin Only: Add Faculty Member
+apiRouter.post('/faculty', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { name, email, department, designation, specialization, facultyId } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Name and email are required' });
+    }
+
+    const id = `usr-fac-${Date.now()}`;
+    const fId = facultyId || `FAC-${Date.now().toString().slice(-4)}`;
+
+    const [newFac] = await db
+      .insert(schema.faculty)
+      .values({
+        id,
+        facultyId: fId,
+        name,
+        email: email.toLowerCase(),
+        department: department || 'Computer Science & Engineering',
+        designation: designation || 'Assistant Professor',
+        status: 'Present',
+        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        specialization: Array.isArray(specialization) ? specialization : ['General Computing'],
+        classesToday: 2,
+        attendanceRate: 98,
+        leaveBalance: 12,
+      })
+      .returning();
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'FACULTY_ADDED',
+      'FACULTY',
+      `Administrator added faculty member ${name} (${fId})`
+    );
+
+    res.status(201).json(newFac);
+  } catch (err: any) {
+    console.error('Error adding faculty member:', err);
+    res.status(500).json({ error: 'Failed to create faculty record' });
+  }
+});
+
+// Admin & HOD: Update Faculty Member
+apiRouter.put('/faculty/:id', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, designation, department, specialization } = req.body;
+
+    const [updated] = await db
+      .update(schema.faculty)
+      .set({
+        ...(status && { status }),
+        ...(designation && { designation }),
+        ...(department && { department }),
+        ...(specialization && { specialization }),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.faculty.id, id))
+      .returning();
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Faculty not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'FACULTY_UPDATED',
+      'FACULTY',
+      `Updated faculty profile for ${updated.name}`
+    );
+
+    res.json(updated);
+  } catch (err: any) {
+    console.error('Error updating faculty:', err);
+    res.status(500).json({ error: 'Failed to update faculty profile' });
+  }
+});
+
+// Admin Only: Remove Faculty Member
+apiRouter.delete('/faculty/:id', authenticateToken, requireRole(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const [deleted] = await db
+      .delete(schema.faculty)
+      .where(eq(schema.faculty.id, id))
+      .returning();
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Faculty not found' });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'FACULTY_DELETED',
+      'FACULTY',
+      `Administrator removed faculty ${deleted.name}`
+    );
+
+    res.json({ success: true, deletedId: id });
+  } catch (err: any) {
+    console.error('Error deleting faculty:', err);
+    res.status(500).json({ error: 'Failed to delete faculty member' });
+  }
+});
+
+// ==========================================
+// 3. TIMETABLE & SCHEDULE
+// ==========================================
+
+apiRouter.get('/timetable', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const { day, facultyId, department, semester } = req.query;
+
+    const conditions = [];
+    if (day && day !== 'All') {
+      conditions.push(ilike(schema.timetableSlots.dayOfWeek, String(day)));
+    }
+    if (facultyId && facultyId !== 'All') {
+      conditions.push(
+        or(
+          eq(schema.timetableSlots.facultyId, String(facultyId)),
+          eq(schema.timetableSlots.substitutedBy, String(facultyId))
+        )
+      );
+    }
+    if (department && department !== 'All') {
+      conditions.push(ilike(schema.timetableSlots.department, `%${department}%`));
+    }
+    if (semester && semester !== 'All') {
+      conditions.push(eq(schema.timetableSlots.semester, String(semester)));
+    }
+
+    const slots = conditions.length > 0
+      ? await db.select().from(schema.timetableSlots).where(and(...conditions)).orderBy(schema.timetableSlots.startTime)
+      : await db.select().from(schema.timetableSlots).orderBy(schema.timetableSlots.startTime);
+
+    res.json(slots);
+  } catch (err: any) {
+    console.error('Error fetching timetable slots:', err);
+    res.status(500).json({ error: 'Failed to fetch timetable' });
+  }
+});
+
+// Admin & HOD: Create / Update Timetable Slot
+apiRouter.post('/timetable', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { dayOfWeek, startTime, endTime, subjectCode, subjectName, department, section, semester, classroom, facultyId, facultyName, enrolledStudents } = req.body;
+
+    const slotId = `slot-${Date.now()}`;
+    const [newSlot] = await db
+      .insert(schema.timetableSlots)
+      .values({
+        id: slotId,
+        dayOfWeek,
+        startTime,
+        endTime,
+        subjectCode,
+        subjectName,
+        department: department || 'Computer Science & Engineering',
+        section: section || 'B.Tech CSE',
+        semester: semester || 'Semester 5',
+        classroom: classroom || 'Room 301',
+        facultyId,
+        facultyName,
+        status: 'SCHEDULED',
+        enrolledStudents: enrolledStudents || 60,
+      })
+      .returning();
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'TIMETABLE_SLOT_CREATED',
+      'TIMETABLE',
+      `Added timetable slot ${subjectCode} (${startTime}-${endTime}) for ${facultyName}`
+    );
+
+    res.status(201).json(newSlot);
+  } catch (err: any) {
+    console.error('Error creating timetable slot:', err);
+    res.status(500).json({ error: 'Failed to create timetable slot' });
+  }
+});
+
+// Helper to ensure full weekly timetable coverage across Monday to Friday
+let timetableCoverageInitialized = false;
+async function ensureTimetableCoverage() {
+  if (timetableCoverageInitialized) return;
+  timetableCoverageInitialized = true;
+  try {
+    const existing = await db.select().from(schema.timetableSlots).limit(20);
+    const hasOtherDays = existing.some(s => s.dayOfWeek !== 'Tuesday');
+    if (hasOtherDays) return;
+
+    const fullWeekSlots = [
+      // Monday
+      {
+        id: 'slot-mon-1',
+        dayOfWeek: 'Monday',
+        startTime: '09:00 AM',
+        endTime: '10:00 AM',
+        subjectCode: 'CS-302',
+        subjectName: 'Data Structures & Algorithms',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 204',
+        facultyId: 'usr-arun',
+        facultyName: 'Dr. Arun Kumar',
+        status: 'SCHEDULED',
+        enrolledStudents: 62,
+        notes: 'Binary Trees & Priority Queues',
+      },
+      {
+        id: 'slot-mon-2',
+        dayOfWeek: 'Monday',
+        startTime: '11:00 AM',
+        endTime: '12:00 PM',
+        subjectCode: 'CS-201',
+        subjectName: 'Data Structures',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 305',
+        facultyId: 'usr-rajesh',
+        facultyName: 'Dr. Rajesh Sharma',
+        status: 'SCHEDULED',
+        enrolledStudents: 60,
+        notes: 'Object Oriented Software Architecture',
+      },
+      {
+        id: 'slot-mon-3',
+        dayOfWeek: 'Monday',
+        startTime: '02:00 PM',
+        endTime: '04:00 PM',
+        subjectCode: 'CS-303P',
+        subjectName: 'Data Structures Lab',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Computing Lab 2',
+        facultyId: 'usr-arun',
+        facultyName: 'Dr. Arun Kumar',
+        status: 'SCHEDULED',
+        enrolledStudents: 32,
+        notes: 'AVL Trees & Balance Factor verification',
+      },
+
+      // Wednesday
+      {
+        id: 'slot-wed-1',
+        dayOfWeek: 'Wednesday',
+        startTime: '09:00 AM',
+        endTime: '10:00 AM',
+        subjectCode: 'CS-302',
+        subjectName: 'Data Structures & Algorithms',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 204',
+        facultyId: 'usr-arun',
+        facultyName: 'Dr. Arun Kumar',
+        status: 'SCHEDULED',
+        enrolledStudents: 62,
+        notes: 'Graph Algorithms: DFS and BFS',
+      },
+      {
+        id: 'slot-wed-2',
+        dayOfWeek: 'Wednesday',
+        startTime: '10:30 AM',
+        endTime: '11:30 AM',
+        subjectCode: 'CS-301',
+        subjectName: 'Database Management Systems',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE III',
+        semester: 'Semester 5',
+        classroom: 'Room 305',
+        facultyId: 'usr-rajesh',
+        facultyName: 'Dr. Rajesh Sharma',
+        status: 'SCHEDULED',
+        enrolledStudents: 58,
+        notes: 'Transaction Management & ACID properties',
+      },
+      {
+        id: 'slot-wed-3',
+        dayOfWeek: 'Wednesday',
+        startTime: '02:00 PM',
+        endTime: '03:00 PM',
+        subjectCode: 'CS-401',
+        subjectName: 'Compiler Design',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE IV',
+        semester: 'Semester 7',
+        classroom: 'Room 301',
+        facultyId: 'usr-raman',
+        facultyName: 'Prof. K. V. Raman',
+        status: 'SCHEDULED',
+        enrolledStudents: 52,
+        notes: 'Lexical analysis & DFA construction',
+      },
+
+      // Thursday
+      {
+        id: 'slot-thu-1',
+        dayOfWeek: 'Thursday',
+        startTime: '09:00 AM',
+        endTime: '10:00 AM',
+        subjectCode: 'CS-201',
+        subjectName: 'Data Structures',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 204',
+        facultyId: 'usr-rajesh',
+        facultyName: 'Dr. Rajesh Sharma',
+        status: 'SCHEDULED',
+        enrolledStudents: 62,
+        notes: 'Shortest path algorithms (Dijkstra)',
+      },
+      {
+        id: 'slot-thu-2',
+        dayOfWeek: 'Thursday',
+        startTime: '11:00 AM',
+        endTime: '12:00 PM',
+        subjectCode: 'CS-302',
+        subjectName: 'Data Structures & Algorithms',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 204',
+        facultyId: 'usr-arun',
+        facultyName: 'Dr. Arun Kumar',
+        status: 'SCHEDULED',
+        enrolledStudents: 62,
+        notes: 'Minimum Spanning Trees: Kruskal & Prim',
+      },
+      {
+        id: 'slot-thu-3',
+        dayOfWeek: 'Thursday',
+        startTime: '02:00 PM',
+        endTime: '04:00 PM',
+        subjectCode: 'CS-202P',
+        subjectName: 'Python Programming Lab',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Computing Lab 4',
+        facultyId: 'usr-rajesh',
+        facultyName: 'Dr. Rajesh Sharma',
+        status: 'SCHEDULED',
+        enrolledStudents: 30,
+        notes: 'Data pipeline engineering & unit testing',
+      },
+
+      // Friday
+      {
+        id: 'slot-fri-1',
+        dayOfWeek: 'Friday',
+        startTime: '09:00 AM',
+        endTime: '10:00 AM',
+        subjectCode: 'CS-302',
+        subjectName: 'Algorithms Problem Solving',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE II',
+        semester: 'Semester 3',
+        classroom: 'Room 204',
+        facultyId: 'usr-arun',
+        facultyName: 'Dr. Arun Kumar',
+        status: 'SCHEDULED',
+        enrolledStudents: 62,
+        notes: 'Dynamic Programming & Memoization',
+      },
+      {
+        id: 'slot-fri-2',
+        dayOfWeek: 'Friday',
+        startTime: '11:00 AM',
+        endTime: '12:00 PM',
+        subjectCode: 'CS-603',
+        subjectName: 'Cloud Computing Architecture',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE IV',
+        semester: 'Semester 7',
+        classroom: 'Auditorium B',
+        facultyId: 'usr-rajesh',
+        facultyName: 'Dr. Rajesh Sharma',
+        status: 'SCHEDULED',
+        enrolledStudents: 75,
+        notes: 'Kubernetes ingress & Service meshes',
+      },
+      {
+        id: 'slot-fri-3',
+        dayOfWeek: 'Friday',
+        startTime: '02:00 PM',
+        endTime: '04:00 PM',
+        subjectCode: 'CS-504P',
+        subjectName: 'Machine Learning Practical',
+        department: 'Department of Computer Science & Engineering',
+        section: 'B.Tech CSE III',
+        semester: 'Semester 5',
+        classroom: 'Computing Lab 4',
+        facultyId: 'usr-sunita',
+        facultyName: 'Dr. Sunita Rao',
+        status: 'SCHEDULED',
+        enrolledStudents: 45,
+        notes: 'Transfer learning on Vision Transformers',
+      },
+    ];
+
+    await db.insert(schema.timetableSlots).values(fullWeekSlots).onConflictDoNothing();
+  } catch (err) {
+    console.warn('Notice ensuring timetable coverage:', err);
+  }
+}
+
+// Helper to calculate list of ISO date strings within range
+function getDatesInRange(startStr: string, endStr: string): string[] {
+  const dates: string[] = [];
+  try {
+    const [sy, sm, sd] = startStr.split('-').map(Number);
+    const [ey, em, ed] = endStr.split('-').map(Number);
+    const curr = new Date(Date.UTC(sy, sm - 1, sd, 12, 0, 0));
+    const end = new Date(Date.UTC(ey, em - 1, ed, 12, 0, 0));
+    let count = 0;
+    while (curr <= end && count < 60) {
+      dates.push(curr.toISOString().split('T')[0]);
+      curr.setUTCDate(curr.getUTCDate() + 1);
+      count++;
+    }
+  } catch {
+    dates.push(startStr);
+  }
+  return dates.length > 0 ? dates : [startStr];
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// ==========================================
+// 4. LEAVE MANAGEMENT (ROLE-PROTECTED)
+// ==========================================
+
+const fetchLeaveRequestsHandler = async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureTimetableCoverage();
+    const { facultyId, status } = req.query;
+    const userRole = req.user!.role;
+    const conditions = [];
+
+    // Role-based scoping:
+    // If FACULTY, show their own leaves unless explicitly requesting
+    if (userRole === 'FACULTY') {
+      const targetFacId = facultyId || req.user!.id;
+      conditions.push(
+        or(
+          eq(schema.leaveRequests.facultyId, String(targetFacId)),
+          ilike(schema.leaveRequests.facultyEmail, req.user!.email)
+        )
+      );
+    } else if (facultyId) {
+      // HOD or ADMIN querying specific faculty
+      conditions.push(eq(schema.leaveRequests.facultyId, String(facultyId)));
+    }
+
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.leaveRequests.status, String(status)));
+    }
+
+    const leaves = conditions.length > 0
+      ? await db.select().from(schema.leaveRequests).where(and(...conditions)).orderBy(desc(schema.leaveRequests.appliedAt))
+      : await db.select().from(schema.leaveRequests).orderBy(desc(schema.leaveRequests.appliedAt));
+
+    res.json(leaves);
+  } catch (err: any) {
+    console.error('Error fetching leave requests:', err);
+    res.status(500).json({ error: 'Failed to fetch leave requests' });
+  }
+};
+
+apiRouter.get('/leave', optionalAuth, fetchLeaveRequestsHandler);
+apiRouter.get('/leaves', optionalAuth, fetchLeaveRequestsHandler);
+apiRouter.get('/leave-requests', optionalAuth, fetchLeaveRequestsHandler);
+
+// Endpoint to preview affected timetable classes for a potential or existing leave application
+apiRouter.get('/leave/preview-affected', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureTimetableCoverage();
+    const { facultyId, facultyName, startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const dates = getDatesInRange(String(startDate), String(endDate));
+
+    // Find all timetable slots for this faculty
+    const fId = String(facultyId || req.user!.id);
+    const fName = String(facultyName || req.user!.name || '');
+
+    const facultySlots = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(
+        or(
+          eq(schema.timetableSlots.facultyId, fId),
+          ilike(schema.timetableSlots.facultyName, `%${fName}%`),
+          ilike(schema.timetableSlots.facultyName, `%${fName.replace(/^(Dr\.|Prof\.)\s*/i, '').trim()}%`)
+        )
+      );
+
+    const affectedClasses: any[] = [];
+
+    for (const dateStr of dates) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      const dayOfWeek = WEEKDAY_NAMES[dateObj.getUTCDay()];
+
+      // Match slots for this day of week
+      const matchingSlots = facultySlots.filter(
+        (s) => s.dayOfWeek.toLowerCase() === dayOfWeek.toLowerCase()
+      );
+
+      if (matchingSlots.length > 0) {
+        for (const slot of matchingSlots) {
+          affectedClasses.push({
+            date: dateStr,
+            dayOfWeek,
+            slotId: slot.id,
+            subjectCode: slot.subjectCode,
+            subjectName: slot.subjectName,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            classroom: slot.classroom,
+            section: slot.section,
+            enrolledStudents: slot.enrolledStudents || 60,
+          });
+        }
+      } else if (dayOfWeek !== 'Sunday') {
+        // Fallback for weekdays if faculty has general courses
+        const fallbackSlot = facultySlots[0];
+        if (fallbackSlot) {
+          affectedClasses.push({
+            date: dateStr,
+            dayOfWeek,
+            slotId: fallbackSlot.id,
+            subjectCode: fallbackSlot.subjectCode,
+            subjectName: fallbackSlot.subjectName,
+            startTime: fallbackSlot.startTime,
+            endTime: fallbackSlot.endTime,
+            classroom: fallbackSlot.classroom,
+            section: fallbackSlot.section,
+            enrolledStudents: fallbackSlot.enrolledStudents || 60,
+          });
+        }
+      }
+    }
+
+    res.json({
+      dates,
+      totalAffectedClasses: affectedClasses.length,
+      affectedClasses,
+    });
+  } catch (err: any) {
+    console.error('Error previewing affected classes:', err);
+    res.status(500).json({ error: 'Failed to preview affected classes' });
+  }
+});
+
+// Any authenticated role can submit leave
+const submitLeaveHandler = async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureTimetableCoverage();
+    const {
+      facultyId,
+      facultyName,
+      facultyEmail,
+      department,
+      designation,
+      leaveType,
+      startDate,
+      endDate,
+      reason,
+      attachmentName,
+    } = req.body;
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const daysDiff = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+
+    const newId = `leave-${Date.now()}`;
+    const fId = facultyId || req.user!.id;
+    const fName = facultyName || req.user!.name;
+    const fEmail = facultyEmail || req.user!.email;
+    const dept = department || req.user!.departmentName || 'Department of Computer Science & Engineering';
+    const desig = designation || req.user!.designation || 'Faculty Member';
+    const lType = leaveType || 'Casual Leave';
+
+    const [newLeave] = await db
+      .insert(schema.leaveRequests)
+      .values({
+        id: newId,
+        facultyId: fId,
+        facultyName: fName,
+        facultyEmail: fEmail,
+        department: dept,
+        designation: desig,
+        leaveType: lType,
+        startDate,
+        endDate,
+        daysCount: daysDiff,
+        reason: reason || 'Academic / personal duties',
+        attachmentName: attachmentName || null,
+        status: 'PENDING',
+      })
+      .returning();
+
+    // Notify HOD
+    await db.insert(schema.notifications).values({
+      id: `notif-${Date.now()}`,
+      userId: 'usr-rajesh',
+      title: `New Leave Request: ${fName}`,
+      message: `${fName} has submitted a ${lType} for ${daysDiff} day(s) (${startDate} to ${endDate}).`,
+      type: 'leave',
+      read: false,
+      timestamp: 'Just now',
+      actionUrl: '/leave',
+    });
+
+    await logAuditAction(
+      fId,
+      fName,
+      'LEAVE_SUBMITTED',
+      'LEAVE',
+      `Applied for ${lType} (${daysDiff} days: ${startDate} to ${endDate})`,
+      { leaveId: newLeave.id }
+    );
+
+    res.status(201).json(newLeave);
+  } catch (err: any) {
+    console.error('Error submitting leave request:', err);
+    res.status(500).json({ error: 'Failed to submit leave request' });
+  }
+};
+
+apiRouter.post('/leave', authenticateToken, submitLeaveHandler);
+apiRouter.post('/leaves', authenticateToken, submitLeaveHandler);
+apiRouter.post('/leave-requests', authenticateToken, submitLeaveHandler);
+
+// CANCEL PENDING LEAVE (Faculty applicant, or HOD/Admin)
+apiRouter.post('/leave/:id/cancel', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const [leave] = await db
+      .select()
+      .from(schema.leaveRequests)
+      .where(eq(schema.leaveRequests.id, id));
+
+    if (!leave) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+
+    if (leave.status !== 'PENDING') {
+      return res.status(400).json({
+        error: `Only pending leave applications can be cancelled. Current status is ${leave.status}.`,
+      });
+    }
+
+    // Role check: Only the owner, HOD, or ADMIN can cancel
+    const isOwner =
+      leave.facultyId === req.user!.id ||
+      leave.facultyEmail.toLowerCase() === req.user!.email.toLowerCase();
+    const isPrivileged = req.user!.role === 'HOD' || req.user!.role === 'ADMIN';
+
+    if (!isOwner && !isPrivileged) {
+      return res.status(403).json({ error: 'You are not authorized to cancel this leave application.' });
+    }
+
+    const [cancelledLeave] = await db
+      .update(schema.leaveRequests)
+      .set({
+        status: 'CANCELLED',
+        reviewedBy: req.user!.name,
+        reviewedAt: new Date(),
+        reviewRemarks: `Application cancelled by ${isOwner ? 'applicant' : req.user!.role}.`,
+      })
+      .where(eq(schema.leaveRequests.id, id))
+      .returning();
+
+    // Notify HOD if faculty cancelled
+    if (isOwner) {
+      await db.insert(schema.notifications).values({
+        id: `notif-${Date.now()}`,
+        userId: 'usr-rajesh',
+        title: `Leave Cancelled: ${leave.facultyName}`,
+        message: `${leave.facultyName} has cancelled their ${leave.leaveType} application for ${leave.startDate} to ${leave.endDate}.`,
+        type: 'leave',
+        read: false,
+        timestamp: 'Just now',
+        actionUrl: '/leave',
+      });
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'LEAVE_CANCELLED',
+      'LEAVE',
+      `Cancelled ${leave.leaveType} for ${leave.facultyName} (${leave.startDate} to ${leave.endDate})`,
+      { leaveId: leave.id }
+    );
+
+    res.json(cancelledLeave);
+  } catch (err: any) {
+    console.error('Error cancelling leave request:', err);
+    res.status(500).json({ error: 'Failed to cancel leave request' });
+  }
+});
+
+// DELETE endpoint alias for cancel
+apiRouter.delete('/leave/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const [leave] = await db.select().from(schema.leaveRequests).where(eq(schema.leaveRequests.id, id));
+  if (!leave) return res.status(404).json({ error: 'Leave request not found' });
+  if (leave.status !== 'PENDING') {
+    return res.status(400).json({ error: `Only pending applications can be cancelled. Current status is ${leave.status}.` });
+  }
+  const [cancelled] = await db
+    .update(schema.leaveRequests)
+    .set({
+      status: 'CANCELLED',
+      reviewedBy: req.user!.name,
+      reviewedAt: new Date(),
+      reviewRemarks: 'Application cancelled by applicant.',
+    })
+    .where(eq(schema.leaveRequests.id, id))
+    .returning();
+  res.json(cancelled);
+});
+
+// PROTECTED: Only HOD and ADMIN can approve/reject leaves
+// When leave is approved: automatically identifies timetable classes affected and shows them in Alternative Class Management
+apiRouter.post('/leave/:id/review', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    await ensureTimetableCoverage();
+    const { id } = req.params;
+    const { status, remarks, reviewerName } = req.body; // 'APPROVED' | 'REJECTED'
+
+    if (!status || (status !== 'APPROVED' && status !== 'REJECTED')) {
+      return res.status(400).json({ error: 'status must be either APPROVED or REJECTED' });
+    }
+
+    const [leave] = await db
+      .select()
+      .from(schema.leaveRequests)
+      .where(eq(schema.leaveRequests.id, id));
+
+    if (!leave) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+
+    const reviewer = reviewerName || req.user!.name || 'HOD Office';
+    const reviewRemarks =
+      remarks ||
+      (status === 'APPROVED'
+        ? `Approved by ${req.user!.role}. Timetable slots flagged for substitute assignment.`
+        : 'Application declined due to academic curriculum coverage.');
+
+    const [updatedLeave] = await db
+      .update(schema.leaveRequests)
+      .set({
+        status,
+        reviewedBy: reviewer,
+        reviewedAt: new Date(),
+        reviewRemarks,
+      })
+      .where(eq(schema.leaveRequests.id, id))
+      .returning();
+
+    const createdAlternativeClasses: any[] = [];
+
+    // AUTOMATIC IDENTIFICATION OF AFFECTED TIMETABLE CLASSES
+    if (status === 'APPROVED') {
+      const dates = getDatesInRange(leave.startDate, leave.endDate);
+
+      // Find all timetable slots matching this faculty member
+      const facultySlots = await db
+        .select()
+        .from(schema.timetableSlots)
+        .where(
+          or(
+            eq(schema.timetableSlots.facultyId, leave.facultyId),
+            ilike(schema.timetableSlots.facultyName, `%${leave.facultyName}%`),
+            ilike(schema.timetableSlots.facultyName, `%${leave.facultyName.replace(/^(Dr\.|Prof\.)\s*/i, '').trim()}%`)
+          )
+        );
+
+      for (const dateStr of dates) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+        const dayOfWeek = WEEKDAY_NAMES[dateObj.getUTCDay()];
+
+        // Match slots for this specific day of week
+        let matchingSlots = facultySlots.filter(
+          (s) => s.dayOfWeek.toLowerCase() === dayOfWeek.toLowerCase()
+        );
+
+        // Fallback for weekdays if no specific slot was seeded for this exact day
+        if (matchingSlots.length === 0 && dayOfWeek !== 'Sunday' && facultySlots.length > 0) {
+          matchingSlots = [facultySlots[0]];
+        }
+
+        for (const slot of matchingSlots) {
+          // Update the timetable slot to indicate substitution is pending
+          await db
+            .update(schema.timetableSlots)
+            .set({ status: 'SUBSTITUTION_PENDING' })
+            .where(eq(schema.timetableSlots.id, slot.id));
+
+          // Generate an alternative class record for this specific class date
+          const altId = `alt-${Date.now()}-${slot.id.replace(/[^a-zA-Z0-9]/g, '')}-${dateStr.replace(/[^0-9]/g, '')}`;
+
+          const [newAlt] = await db
+            .insert(schema.alternativeClasses)
+            .values({
+              id: altId,
+              leaveRequestId: leave.id,
+              originalFacultyId: leave.facultyId,
+              originalFacultyName: leave.facultyName,
+              subjectCode: slot.subjectCode,
+              subjectName: slot.subjectName,
+              date: dateStr,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+              classroom: slot.classroom,
+              section: slot.section,
+              reason: `Faculty on ${leave.leaveType}: ${leave.reason.slice(0, 70)}`,
+              status: 'PENDING_FACULTY_ASSIGNMENT',
+              notes: `${slot.enrolledStudents || 60} enrolled students • ${slot.semester} • Substitute required (Leave: ${leave.startDate} to ${leave.endDate})`,
+            })
+            .returning();
+
+          createdAlternativeClasses.push(newAlt);
+        }
+      }
+
+      // Update faculty member's real-time status in faculty roster to 'On Leave'
+      await db
+        .update(schema.faculty)
+        .set({ status: 'On Leave' })
+        .where(
+          or(
+            eq(schema.faculty.id, leave.facultyId),
+            ilike(schema.faculty.name, `%${leave.facultyName}%`)
+          )
+        );
+    }
+
+    // Notify the applicant
+    await db.insert(schema.notifications).values({
+      id: `notif-${Date.now()}`,
+      userId: leave.facultyId,
+      title: `${leave.leaveType} ${status.toLowerCase()} by ${req.user!.role}`,
+      message: `Your leave request for ${leave.startDate} to ${leave.endDate} has been ${status.toLowerCase()}.${
+        createdAlternativeClasses.length > 0
+          ? ` ${createdAlternativeClasses.length} timetable class(es) have been scheduled for substitute faculty assignment.`
+          : ''
+      }`,
+      type: 'leave',
+      read: false,
+      timestamp: 'Just now',
+      actionUrl: '/leave',
+    });
+
+    await logAuditAction(
+      req.user!.id,
+      reviewer,
+      `LEAVE_${status}`,
+      'LEAVE',
+      `${status} ${leave.leaveType} for ${leave.facultyName} (${leave.startDate} to ${leave.endDate})${
+        createdAlternativeClasses.length > 0 ? ` • ${createdAlternativeClasses.length} classes routed to Alternative Class Management` : ''
+      }`,
+      { leaveId: leave.id, affectedClassesCount: createdAlternativeClasses.length }
+    );
+
+    res.json({
+      ...updatedLeave,
+      affectedSlotsCount: createdAlternativeClasses.length,
+      alternativeClasses: createdAlternativeClasses,
+    });
+  } catch (err: any) {
+    console.error('Error reviewing leave request:', err);
+    res.status(500).json({ error: 'Failed to review leave request' });
+  }
+});
+
+// ==========================================
+// 5. ALTERNATIVE CLASS MANAGEMENT (ROLE-PROTECTED)
+// ==========================================
+
+apiRouter.get('/alternatives', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const list = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .orderBy(desc(schema.alternativeClasses.createdAt));
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching alternative classes:', err);
+    res.status(500).json({ error: 'Failed to fetch alternative classes' });
+  }
+});
+
+apiRouter.get('/alternative-classes', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const list = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .orderBy(desc(schema.alternativeClasses.createdAt));
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching alternative classes:', err);
+    res.status(500).json({ error: 'Failed to fetch alternative classes' });
+  }
+});
+
+function getDayNameFromDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const d = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return days[d.getUTCDay()];
+  }
+  return '';
+}
+
+// PROTECTED: Only HOD and ADMIN can view candidate recommendations & matching scores
+apiRouter.get('/alternatives/:id/candidates', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const [alt] = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .where(eq(schema.alternativeClasses.id, id));
+
+    if (!alt) {
+      return res.status(404).json({ error: 'Alternative class request not found' });
+    }
+
+    const targetDay = getDayNameFromDate(alt.date) || 'Tuesday';
+
+    const facultyList = await db
+      .select()
+      .from(schema.faculty)
+      .where(ne(schema.faculty.id, alt.originalFacultyId));
+
+    const allSlots = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(ne(schema.timetableSlots.status, 'COMPLETED'));
+
+    const allApprovedLeaves = await db
+      .select()
+      .from(schema.leaveRequests)
+      .where(eq(schema.leaveRequests.status, 'APPROVED'));
+
+    const otherAlternativeAssignments = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .where(
+        and(
+          ne(schema.alternativeClasses.id, alt.id),
+          eq(schema.alternativeClasses.date, alt.date),
+          eq(schema.alternativeClasses.startTime, alt.startTime),
+          or(
+            eq(schema.alternativeClasses.status, 'OFFERED_TO_FACULTY'),
+            eq(schema.alternativeClasses.status, 'ACCEPTED')
+          )
+        )
+      );
+
+    const candidates: CandidateFaculty[] = facultyList.map((f) => {
+      let matchScore = 0;
+      const matchReasons: string[] = [];
+
+      // 1. Timetable conflict check on the target day of week
+      const conflictSlot = allSlots.find(
+        (t) =>
+          (t.facultyId === f.id || t.substitutedBy === f.id) &&
+          t.dayOfWeek.toLowerCase() === targetDay.toLowerCase() &&
+          t.startTime === alt.startTime
+      );
+
+      // 2. Approved leave check on the target date
+      const leaveOnDate = allApprovedLeaves.find(
+        (l) => l.facultyId === f.id && l.startDate <= alt.date && l.endDate >= alt.date
+      );
+
+      // 3. Alternative assignment conflict check
+      const altConflict = otherAlternativeAssignments.find(
+        (a) => a.assignedFacultyId === f.id
+      );
+
+      const isAvailable = !conflictSlot && !leaveOnDate && !altConflict && f.status !== 'On Leave';
+
+      let conflictReason: string | undefined;
+      if (conflictSlot) {
+        conflictReason = `Teaching ${conflictSlot.subjectCode} in ${conflictSlot.classroom} on ${targetDay} at ${alt.startTime}`;
+      } else if (leaveOnDate) {
+        conflictReason = `On approved ${leaveOnDate.leaveType} (${leaveOnDate.startDate} to ${leaveOnDate.endDate})`;
+      } else if (altConflict) {
+        conflictReason = `Already assigned substitute for ${altConflict.subjectCode} at ${alt.startTime}`;
+      } else if (f.status === 'On Leave') {
+        conflictReason = 'Faculty is currently marked On Leave';
+      }
+
+      // Department matching
+      const sameDept = f.department.toLowerCase().includes('computer') || f.department.toLowerCase().includes('cse');
+      if (sameDept) {
+        matchScore += 25;
+        matchReasons.push('Same department');
+      }
+
+      // Subject specialization matching
+      const subjectTokens = `${alt.subjectName} ${alt.subjectCode}`.toLowerCase();
+      const specArray = Array.isArray(f.specialization) ? f.specialization : [];
+      let specMatched = false;
+      let matchedSpecName = '';
+
+      for (const s of specArray) {
+        const sLower = s.toLowerCase();
+        if (
+          subjectTokens.includes(sLower) ||
+          (subjectTokens.includes('algorithm') && sLower.includes('algorithm')) ||
+          (subjectTokens.includes('data structure') && sLower.includes('data structure')) ||
+          (subjectTokens.includes('database') && sLower.includes('database')) ||
+          (subjectTokens.includes('network') && sLower.includes('network')) ||
+          (subjectTokens.includes('ai') && sLower.includes('ai')) ||
+          (subjectTokens.includes('intelligence') && sLower.includes('machine learning'))
+        ) {
+          specMatched = true;
+          matchedSpecName = s;
+          break;
+        }
+      }
+
+      if (specMatched) {
+        matchScore += 35;
+        matchReasons.push(`Specialization aligned: ${matchedSpecName}`);
+      }
+
+      // Availability scoring
+      if (isAvailable) {
+        matchScore += 30;
+        matchReasons.push(`Free on ${targetDay} at ${alt.startTime}`);
+      } else {
+        matchReasons.push(conflictReason || `Unavailable at ${alt.startTime}`);
+      }
+
+      // Workload balancing (lower daily workload is preferred)
+      const workloadScore = Math.max(0, (4 - f.classesToday) * 3);
+      matchScore += workloadScore;
+      if (f.classesToday <= 1) {
+        matchReasons.push(`Light workload today (${f.classesToday} class)`);
+      } else if (f.classesToday >= 3) {
+        matchReasons.push(`Heavy workload today (${f.classesToday} classes)`);
+      }
+
+      return {
+        id: f.id,
+        name: f.name,
+        department: f.department,
+        designation: f.designation,
+        workloadToday: f.classesToday,
+        isAvailable,
+        conflictReason,
+        matchScore: Math.min(100, isAvailable ? matchScore : Math.min(45, matchScore)),
+        matchReasons,
+        avatarUrl: f.avatarUrl || undefined,
+      };
+    }).sort((a, b) => {
+      // Available candidates first, then by match score
+      if (a.isAvailable && !b.isAvailable) return -1;
+      if (!a.isAvailable && b.isAvailable) return 1;
+      return b.matchScore - a.matchScore;
+    });
+
+    res.json(candidates);
+  } catch (err: any) {
+    console.error('Error fetching alternative candidates:', err);
+    res.status(500).json({ error: 'Failed to calculate alternative candidates' });
+  }
+});
+
+// PROTECTED: Only HOD and ADMIN can assign substitute faculty
+apiRouter.post('/alternatives/:id/assign', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { facultyId } = req.body;
+
+    const [alt] = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .where(eq(schema.alternativeClasses.id, id));
+
+    if (!alt) {
+      return res.status(404).json({ error: 'Alternative class not found' });
+    }
+
+    const [substitute] = await db
+      .select()
+      .from(schema.faculty)
+      .where(eq(schema.faculty.id, facultyId));
+
+    if (!substitute) {
+      return res.status(404).json({ error: 'Target faculty not found' });
+    }
+
+    const [updatedAlt] = await db
+      .update(schema.alternativeClasses)
+      .set({
+        assignedFacultyId: substitute.id,
+        assignedFacultyName: substitute.name,
+        assignedAt: new Date(),
+        status: 'OFFERED_TO_FACULTY',
+        notes: `Assigned to ${substitute.name} by HOD ${req.user!.name} on ${new Date().toLocaleDateString()}`,
+      })
+      .where(eq(schema.alternativeClasses.id, id))
+      .returning();
+
+    // 1. Notify substitute faculty (High priority)
+    await db.insert(schema.notifications).values({
+      id: `notif-${Date.now()}-sub`,
+      userId: substitute.id,
+      title: `Substitute Teaching Request: ${alt.subjectCode}`,
+      message: `HOD ${req.user!.name} has requested you to cover ${alt.subjectName} (${alt.section}) on ${alt.date} at ${alt.startTime}-${alt.endTime} in ${alt.classroom} for ${alt.originalFacultyName}.`,
+      type: 'substitution',
+      read: false,
+      timestamp: 'Just now',
+      actionUrl: '/classes',
+      actionPayload: { altId: alt.id, subjectCode: alt.subjectCode, date: alt.date, startTime: alt.startTime },
+    });
+
+    // 2. Notify original faculty on leave
+    if (alt.originalFacultyId) {
+      await db.insert(schema.notifications).values({
+        id: `notif-${Date.now()}-orig`,
+        userId: alt.originalFacultyId,
+        title: `Substitute Nominated: ${alt.subjectCode}`,
+        message: `HOD ${req.user!.name} has nominated ${substitute.name} to cover your ${alt.subjectName} class on ${alt.date} (${alt.startTime}).`,
+        type: 'substitution',
+        read: false,
+        timestamp: 'Just now',
+        actionUrl: '/classes',
+      });
+    }
+
+    // 3. Immutable audit log trace
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'ALTERNATIVE_FACULTY_ASSIGNED',
+      'SUBSTITUTION',
+      `HOD ${req.user!.name} assigned substitute ${substitute.name} for ${alt.subjectName} (${alt.date} ${alt.startTime}-${alt.endTime} in ${alt.classroom}) covering for ${alt.originalFacultyName}`,
+      {
+        altId: alt.id,
+        originalFacultyId: alt.originalFacultyId,
+        substituteId: substitute.id,
+        substituteName: substitute.name,
+        date: alt.date,
+        startTime: alt.startTime,
+        classroom: alt.classroom,
+      }
+    );
+
+    res.json(updatedAlt);
+  } catch (err: any) {
+    console.error('Error assigning substitute faculty:', err);
+    res.status(500).json({ error: 'Failed to assign alternative faculty' });
+  }
+});
+
+// Assigned faculty member (or admin/HOD) can accept/decline substitute classes
+apiRouter.post('/alternatives/:id/respond', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { action, reason } = req.body; // action: 'accept' | 'decline', optional reason
+
+    const [alt] = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .where(eq(schema.alternativeClasses.id, id));
+
+    if (!alt) {
+      return res.status(404).json({ error: 'Alternative class not found' });
+    }
+
+    // Role check: Only the assigned faculty, or an Admin/HOD, can respond
+    const isAssigned = alt.assignedFacultyId === req.user!.id;
+    const isPrivileged = req.user!.role === 'ADMIN' || req.user!.role === 'HOD';
+
+    if (!isAssigned && !isPrivileged) {
+      return res.status(403).json({
+        error: 'Forbidden: You can only respond to substitute classes assigned to you.',
+        code: 'NOT_ASSIGNED_FACULTY',
+      });
+    }
+
+    let updatedAlt;
+    const responderName = req.user!.name;
+    const substituteName = alt.assignedFacultyName || responderName;
+
+    if (action === 'accept') {
+      [updatedAlt] = await db
+        .update(schema.alternativeClasses)
+        .set({
+          status: 'ACCEPTED',
+          notes: `Accepted by ${substituteName} on ${new Date().toLocaleDateString()}`,
+        })
+        .where(eq(schema.alternativeClasses.id, id))
+        .returning();
+
+      // Update timetable slot to show substituted teacher
+      await db
+        .update(schema.timetableSlots)
+        .set({
+          status: 'SUBSTITUTED',
+          substitutedBy: alt.assignedFacultyId || req.user!.id,
+          substitutedByName: substituteName,
+          notes: `Substituted by ${substituteName} (Coverage for ${alt.originalFacultyName})`,
+        })
+        .where(
+          and(
+            eq(schema.timetableSlots.startTime, alt.startTime),
+            eq(schema.timetableSlots.subjectCode, alt.subjectCode)
+          )
+        );
+
+      // Notify HOD of acceptance
+      await db.insert(schema.notifications).values({
+        id: `notif-${Date.now()}-hod`,
+        userId: 'usr-rajesh',
+        title: `Substitute Accepted: ${alt.subjectCode}`,
+        message: `${substituteName} has ACCEPTED coverage for ${alt.subjectName} on ${alt.date} at ${alt.startTime}. Timetable roster is updated.`,
+        type: 'substitution',
+        read: false,
+        timestamp: 'Just now',
+        actionUrl: '/classes',
+      });
+
+      // Notify original faculty that coverage is confirmed
+      if (alt.originalFacultyId) {
+        await db.insert(schema.notifications).values({
+          id: `notif-${Date.now()}-conf`,
+          userId: alt.originalFacultyId,
+          title: `Coverage Confirmed: ${alt.subjectCode}`,
+          message: `${substituteName} has confirmed coverage for your class on ${alt.date} at ${alt.startTime} in ${alt.classroom}.`,
+          type: 'substitution',
+          read: false,
+          timestamp: 'Just now',
+          actionUrl: '/classes',
+        });
+      }
+
+      await logAuditAction(
+        req.user!.id,
+        req.user!.name,
+        'ALTERNATIVE_FACULTY_ACCEPTED',
+        'SUBSTITUTION',
+        `${substituteName} accepted substitute coverage for ${alt.subjectName} (${alt.date} ${alt.startTime} in ${alt.classroom})`,
+        {
+          altId: alt.id,
+          assignedFacultyId: alt.assignedFacultyId,
+          substituteName,
+          date: alt.date,
+          startTime: alt.startTime,
+          subjectCode: alt.subjectCode,
+        }
+      );
+    } else {
+      // DECLINED
+      const declineReasonNote = reason ? `Declined by ${substituteName}: ${reason}` : `Declined by ${substituteName}`;
+
+      [updatedAlt] = await db
+        .update(schema.alternativeClasses)
+        .set({
+          status: 'DECLINED',
+          notes: declineReasonNote,
+        })
+        .where(eq(schema.alternativeClasses.id, id))
+        .returning();
+
+      // Urgent notification to HOD
+      await db.insert(schema.notifications).values({
+        id: `notif-${Date.now()}-decl`,
+        userId: 'usr-rajesh',
+        title: `URGENT: Substitute Declined - ${alt.subjectCode}`,
+        message: `${substituteName} has DECLINED substitute request for ${alt.subjectName} on ${alt.date} at ${alt.startTime}.${reason ? ` Reason: ${reason}.` : ''} Please assign another faculty member.`,
+        type: 'substitution',
+        read: false,
+        timestamp: 'Just now',
+        actionUrl: '/classes',
+        actionPayload: { altId: alt.id, status: 'DECLINED' },
+      });
+
+      await logAuditAction(
+        req.user!.id,
+        req.user!.name,
+        'ALTERNATIVE_FACULTY_DECLINED',
+        'SUBSTITUTION',
+        `${substituteName} declined substitution for ${alt.subjectName} on ${alt.date} at ${alt.startTime}${reason ? ` (Reason: ${reason})` : ''}. Flagged for HOD reassignment.`,
+        {
+          altId: alt.id,
+          assignedFacultyId: alt.assignedFacultyId,
+          substituteName,
+          reason,
+          date: alt.date,
+        }
+      );
+    }
+
+    res.json(updatedAlt);
+  } catch (err: any) {
+    console.error('Error responding to alternative class request:', err);
+    res.status(500).json({ error: 'Failed to process response' });
+  }
+});
+
+// ==========================================
+// 6. NOTIFICATIONS
+// ==========================================
+
+apiRouter.get('/notifications', optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const targetUserId = req.user!.id;
+
+    const list = await db
+      .select()
+      .from(schema.notifications)
+      .where(
+        or(
+          eq(schema.notifications.userId, targetUserId),
+          eq(schema.notifications.userId, 'usr-rajesh'),
+          eq(schema.notifications.userId, 'all')
+        )
+      )
+      .orderBy(desc(schema.notifications.createdAt));
+
+    res.json(list);
+  } catch (err: any) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+apiRouter.post('/notifications/:id/read', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    await db
+      .update(schema.notifications)
+      .set({ read: true })
+      .where(eq(schema.notifications.id, id));
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Error marking notification as read:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+apiRouter.post('/notifications/read-all', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await db.update(schema.notifications).set({ read: true });
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Error marking all notifications as read:', err);
+    res.status(500).json({ error: 'Failed to mark notifications' });
+  }
+});
+
+// ==========================================
+// 7. BROADCAST ANNOUNCEMENTS (ROLE-PROTECTED)
+// ==========================================
+
+// PROTECTED: Only HOD and ADMIN can send broadcasts
+apiRouter.post('/department/broadcast', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { message, targetGroup } = req.body;
+    const facultyList = await db.select().from(schema.faculty);
+
+    const values = facultyList.map((f) => ({
+      id: `notif-${Date.now()}-${f.id}`,
+      userId: f.id,
+      title: `${req.user!.role === 'ADMIN' ? 'University Academic' : 'Department'} Announcement`,
+      message: message || 'Academic council session scheduled.',
+      type: 'announcement',
+      read: false,
+      timestamp: 'Just now',
+    }));
+
+    if (values.length > 0) {
+      await db.insert(schema.notifications).values(values);
+    }
+
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'BROADCAST_DISPATCHED',
+      'SYSTEM',
+      `Dispatched broadcast as ${req.user!.role} to ${targetGroup || 'all faculty'}: "${message}"`
+    );
+
+    res.json({ success: true, count: facultyList.length });
+  } catch (err: any) {
+    console.error('Error dispatching broadcast:', err);
+    res.status(500).json({ error: 'Failed to send broadcast announcement' });
+  }
+});
+
+// ==========================================
+// 8. REPORTS & ANALYTICS (ROLE-PROTECTED: ADMIN & HOD)
+// ==========================================
+
+// PROTECTED: Only HOD and ADMIN can view executive summaries
+apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const allFaculty = await db.select().from(schema.faculty);
+    const totalFaculty = allFaculty.length;
+    const presentFaculty = allFaculty.filter(
+      (f) => f.status === 'Present' || f.status === 'In Lecture'
+    ).length;
+    const onLeaveFaculty = allFaculty.filter((f) => f.status === 'On Leave').length;
+    const attendanceRate = totalFaculty > 0 ? Math.round((presentFaculty / totalFaculty) * 100) : 95;
+
+    const allSlots = await db.select().from(schema.timetableSlots);
+    const completedClasses = allSlots.filter((t) => t.status === 'COMPLETED').length;
+    const inProgressClasses = allSlots.filter((t) => t.status === 'IN_PROGRESS').length;
+    const totalScheduledClasses = allSlots.length;
+
+    const allAlts = await db.select().from(schema.alternativeClasses);
+    const pendingSubs = allAlts.filter((a) => a.status === 'PENDING_FACULTY_ASSIGNMENT').length;
+    const resolvedSubs = allAlts.filter((a) => a.status === 'ACCEPTED').length;
+
+    const departmentsList = await db.select().from(schema.departments);
+
+    res.json({
+      role: req.user!.role,
+      metrics: {
+        totalFaculty: totalFaculty || 184,
+        presentFaculty: presentFaculty || 172,
+        onLeaveFaculty: onLeaveFaculty || 6,
+        attendanceRate: attendanceRate || 94,
+        totalClassesToday: totalScheduledClasses || 412,
+        departmentStats: {
+          totalCSE: totalFaculty,
+          presentCSE: presentFaculty,
+          onLeaveCSE: onLeaveFaculty,
+          cseAttendanceRate: attendanceRate,
+          classesCompleted: completedClasses,
+          classesInProgress: inProgressClasses,
+          classesTotal: totalScheduledClasses,
+          substitutionsPending: pendingSubs,
+          substitutionsResolved: resolvedSubs,
+        },
+      },
+      departmentAttendance: departmentsList.map((d) => ({
+        name: d.name,
+        code: d.code,
+        faculty: d.facultyCount,
+        attendance: d.attendanceRate,
+        activeClasses: Math.round(d.facultyCount * 1.2),
+      })),
+      weeklyAttendanceTrend: [
+        { day: 'Mon', attendance: 95, lecturesHeld: 78 },
+        { day: 'Tue', attendance: 94, lecturesHeld: 82 },
+        { day: 'Wed', attendance: 96, lecturesHeld: 80 },
+        { day: 'Thu', attendance: 93, lecturesHeld: 84 },
+        { day: 'Fri', attendance: 91, lecturesHeld: 76 },
+      ],
+    });
+  } catch (err: any) {
+    console.error('Error calculating reports summary:', err);
+    res.status(500).json({ error: 'Failed to generate reports' });
+  }
+});
+
+// 8.1 ATTENDANCE REPORT (REAL DATABASE QUERY WITH FILTERS)
+apiRouter.get('/reports/attendance', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { department, status, search } = req.query;
+
+    const conditions: any[] = [];
+    if (department && department !== 'All') {
+      conditions.push(eq(schema.faculty.department, String(department)));
+    }
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.faculty.status, String(status)));
+    }
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      conditions.push(
+        or(
+          ilike(schema.faculty.name, term),
+          ilike(schema.faculty.facultyId, term),
+          ilike(schema.faculty.designation, term),
+          ilike(schema.faculty.email, term)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const records = await db
+      .select()
+      .from(schema.faculty)
+      .where(whereClause)
+      .orderBy(desc(schema.faculty.attendanceRate));
+
+    // Summary metrics computed from query results
+    const total = records.length;
+    const presentCount = records.filter((r) => r.status === 'Present').length;
+    const inLectureCount = records.filter((r) => r.status === 'In Lecture').length;
+    const onLeaveCount = records.filter((r) => r.status === 'On Leave').length;
+    const absentCount = records.filter((r) => r.status === 'Absent').length;
+    const avgAttendanceRate = total > 0
+      ? Math.round(records.reduce((acc, r) => acc + (r.attendanceRate || 0), 0) / total)
+      : 0;
+
+    const departmentsList = await db.select().from(schema.departments);
+
+    res.json({
+      records,
+      metrics: {
+        total,
+        presentCount,
+        inLectureCount,
+        onLeaveCount,
+        absentCount,
+        activeOnDuty: presentCount + inLectureCount,
+        avgAttendanceRate,
+      },
+      departments: departmentsList.map((d) => d.name),
+    });
+  } catch (err: any) {
+    console.error('Error fetching attendance report:', err);
+    res.status(500).json({ error: 'Failed to fetch attendance report' });
+  }
+});
+
+// 8.2 LEAVE REPORT (REAL DATABASE QUERY WITH FILTERS)
+apiRouter.get('/reports/leave', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { department, leaveType, status, search } = req.query;
+
+    const conditions: any[] = [];
+    if (department && department !== 'All') {
+      conditions.push(eq(schema.leaveRequests.department, String(department)));
+    }
+    if (leaveType && leaveType !== 'All') {
+      conditions.push(eq(schema.leaveRequests.leaveType, String(leaveType)));
+    }
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.leaveRequests.status, String(status)));
+    }
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      conditions.push(
+        or(
+          ilike(schema.leaveRequests.facultyName, term),
+          ilike(schema.leaveRequests.reason, term),
+          ilike(schema.leaveRequests.id, term),
+          ilike(schema.leaveRequests.designation, term)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const records = await db
+      .select()
+      .from(schema.leaveRequests)
+      .where(whereClause)
+      .orderBy(desc(schema.leaveRequests.appliedAt));
+
+    // Summary metrics computed from query results
+    const total = records.length;
+    const approvedCount = records.filter((r) => r.status === 'APPROVED').length;
+    const pendingCount = records.filter((r) => r.status === 'PENDING').length;
+    const rejectedCount = records.filter((r) => r.status === 'REJECTED').length;
+    const totalDaysTaken = records.reduce((acc, r) => acc + (r.daysCount || 0), 0);
+    const approvedDaysTaken = records
+      .filter((r) => r.status === 'APPROVED')
+      .reduce((acc, r) => acc + (r.daysCount || 0), 0);
+
+    const departmentsList = await db.select().from(schema.departments);
+
+    res.json({
+      records,
+      metrics: {
+        total,
+        approvedCount,
+        pendingCount,
+        rejectedCount,
+        totalDaysTaken,
+        approvedDaysTaken,
+      },
+      departments: departmentsList.map((d) => d.name),
+    });
+  } catch (err: any) {
+    console.error('Error fetching leave report:', err);
+    res.status(500).json({ error: 'Failed to fetch leave report' });
+  }
+});
+
+// 8.3 ALTERNATIVE CLASS REPORT (REAL DATABASE QUERY WITH FILTERS)
+apiRouter.get('/reports/alternative-classes', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { status, date, search } = req.query;
+
+    const conditions: any[] = [];
+    if (status && status !== 'All') {
+      if (status === 'UNASSIGNED') {
+        conditions.push(or(
+          eq(schema.alternativeClasses.status, 'PENDING_FACULTY_ASSIGNMENT'),
+          eq(schema.alternativeClasses.status, 'DECLINED')
+        ));
+      } else {
+        conditions.push(eq(schema.alternativeClasses.status, String(status)));
+      }
+    }
+    if (date && date !== 'All' && String(date).trim()) {
+      conditions.push(eq(schema.alternativeClasses.date, String(date)));
+    }
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      conditions.push(
+        or(
+          ilike(schema.alternativeClasses.subjectName, term),
+          ilike(schema.alternativeClasses.subjectCode, term),
+          ilike(schema.alternativeClasses.originalFacultyName, term),
+          ilike(schema.alternativeClasses.assignedFacultyName, term),
+          ilike(schema.alternativeClasses.classroom, term),
+          ilike(schema.alternativeClasses.section, term)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const records = await db
+      .select()
+      .from(schema.alternativeClasses)
+      .where(whereClause)
+      .orderBy(desc(schema.alternativeClasses.createdAt));
+
+    // Summary metrics computed from query results
+    const total = records.length;
+    const pendingAssignment = records.filter((r) => r.status === 'PENDING_FACULTY_ASSIGNMENT').length;
+    const offered = records.filter((r) => r.status === 'OFFERED_TO_FACULTY').length;
+    const accepted = records.filter((r) => r.status === 'ACCEPTED').length;
+    const declined = records.filter((r) => r.status === 'DECLINED').length;
+    const resolutionRate = total > 0 ? Math.round((accepted / total) * 100) : 100;
+
+    res.json({
+      records,
+      metrics: {
+        total,
+        pendingAssignment,
+        offered,
+        accepted,
+        declined,
+        resolutionRate,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching alternative classes report:', err);
+    res.status(500).json({ error: 'Failed to fetch alternative classes report' });
+  }
+});
+
+// 8.4 CLASS COMPLETION REPORT (REAL DATABASE QUERY WITH FILTERS)
+apiRouter.get('/reports/class-completion', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { dayOfWeek, status, department, semester, search } = req.query;
+
+    const conditions: any[] = [];
+    if (dayOfWeek && dayOfWeek !== 'All') {
+      conditions.push(eq(schema.timetableSlots.dayOfWeek, String(dayOfWeek)));
+    }
+    if (status && status !== 'All') {
+      conditions.push(eq(schema.timetableSlots.status, String(status)));
+    }
+    if (department && department !== 'All') {
+      conditions.push(eq(schema.timetableSlots.department, String(department)));
+    }
+    if (semester && semester !== 'All') {
+      conditions.push(eq(schema.timetableSlots.semester, String(semester)));
+    }
+    if (search && String(search).trim()) {
+      const term = `%${String(search).trim()}%`;
+      conditions.push(
+        or(
+          ilike(schema.timetableSlots.subjectName, term),
+          ilike(schema.timetableSlots.subjectCode, term),
+          ilike(schema.timetableSlots.facultyName, term),
+          ilike(schema.timetableSlots.classroom, term),
+          ilike(schema.timetableSlots.section, term)
+        )
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const records = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(whereClause)
+      .orderBy(schema.timetableSlots.dayOfWeek, schema.timetableSlots.startTime);
+
+    // Summary metrics computed from query results
+    const total = records.length;
+    const completed = records.filter((r) => r.status === 'COMPLETED').length;
+    const inProgress = records.filter((r) => r.status === 'IN_PROGRESS').length;
+    const scheduled = records.filter((r) => r.status === 'SCHEDULED').length;
+    const substituted = records.filter((r) => !!r.substitutedBy || !!r.substitutedByName).length;
+    const totalStudentsCovered = records.reduce((acc, r) => acc + (r.enrolledStudents || 0), 0);
+    const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    const departmentsList = await db.select().from(schema.departments);
+
+    res.json({
+      records,
+      metrics: {
+        total,
+        completed,
+        inProgress,
+        scheduled,
+        substituted,
+        totalStudentsCovered,
+        completionRate,
+      },
+      departments: departmentsList.map((d) => d.name),
+    });
+  } catch (err: any) {
+    console.error('Error fetching class completion report:', err);
+    res.status(500).json({ error: 'Failed to fetch class completion report' });
+  }
+});
+
+// Helper to escape CSV strings
+function escapeCsv(val: any): string {
+  if (val === null || val === undefined) return '""';
+  const str = String(val).replace(/"/g, '""');
+  return `"${str}"`;
+}
+
+// 8.5 CSV EXPORT WITH REAL DATABASE QUERIES & APPLIED FILTERS
+apiRouter.get('/reports/export-csv', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const type = (req.query.type as string) || 'attendance';
+    const { department, status, leaveType, dayOfWeek, semester, search, date } = req.query;
+    let csvContent = '';
+    const dateStamp = new Date().toISOString().split('T')[0];
+    const filename = `Takshashila_${type}_report_${dateStamp}.csv`;
+
+    if (type === 'attendance') {
+      const conditions: any[] = [];
+      if (department && department !== 'All') conditions.push(eq(schema.faculty.department, String(department)));
+      if (status && status !== 'All') conditions.push(eq(schema.faculty.status, String(status)));
+      if (search && String(search).trim()) {
+        const term = `%${String(search).trim()}%`;
+        conditions.push(or(
+          ilike(schema.faculty.name, term),
+          ilike(schema.faculty.facultyId, term),
+          ilike(schema.faculty.designation, term)
+        ));
+      }
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const list = await db.select().from(schema.faculty).where(whereClause).orderBy(desc(schema.faculty.attendanceRate));
+
+      csvContent = [
+        ['Faculty ID', 'Name', 'Email', 'Department', 'Designation', 'Status', 'Attendance Rate (%)', 'Classes Today', 'Leave Balance (Days)'].map(escapeCsv).join(','),
+        ...list.map((f) => [
+          escapeCsv(f.facultyId),
+          escapeCsv(f.name),
+          escapeCsv(f.email),
+          escapeCsv(f.department),
+          escapeCsv(f.designation),
+          escapeCsv(f.status),
+          escapeCsv(f.attendanceRate),
+          escapeCsv(f.classesToday),
+          escapeCsv(f.leaveBalance),
+        ].join(',')),
+      ].join('\n');
+
+    } else if (type === 'leave') {
+      const conditions: any[] = [];
+      if (department && department !== 'All') conditions.push(eq(schema.leaveRequests.department, String(department)));
+      if (leaveType && leaveType !== 'All') conditions.push(eq(schema.leaveRequests.leaveType, String(leaveType)));
+      if (status && status !== 'All') conditions.push(eq(schema.leaveRequests.status, String(status)));
+      if (search && String(search).trim()) {
+        const term = `%${String(search).trim()}%`;
+        conditions.push(or(
+          ilike(schema.leaveRequests.facultyName, term),
+          ilike(schema.leaveRequests.reason, term),
+          ilike(schema.leaveRequests.id, term)
+        ));
+      }
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const list = await db.select().from(schema.leaveRequests).where(whereClause).orderBy(desc(schema.leaveRequests.appliedAt));
+
+      csvContent = [
+        ['Request ID', 'Faculty Name', 'Department', 'Designation', 'Leave Type', 'Start Date', 'End Date', 'Days Count', 'Status', 'Reason', 'Applied At', 'Reviewed By', 'Review Remarks'].map(escapeCsv).join(','),
+        ...list.map((l) => [
+          escapeCsv(l.id),
+          escapeCsv(l.facultyName),
+          escapeCsv(l.department),
+          escapeCsv(l.designation),
+          escapeCsv(l.leaveType),
+          escapeCsv(l.startDate),
+          escapeCsv(l.endDate),
+          escapeCsv(l.daysCount),
+          escapeCsv(l.status),
+          escapeCsv(l.reason),
+          escapeCsv(l.appliedAt ? new Date(l.appliedAt).toISOString().split('T')[0] : ''),
+          escapeCsv(l.reviewedBy || 'Pending'),
+          escapeCsv(l.reviewRemarks || ''),
+        ].join(',')),
+      ].join('\n');
+
+    } else if (type === 'alternative' || type === 'alternative-classes' || type === 'substitutions') {
+      const conditions: any[] = [];
+      if (status && status !== 'All') {
+        if (status === 'UNASSIGNED') {
+          conditions.push(or(
+            eq(schema.alternativeClasses.status, 'PENDING_FACULTY_ASSIGNMENT'),
+            eq(schema.alternativeClasses.status, 'DECLINED')
+          ));
+        } else {
+          conditions.push(eq(schema.alternativeClasses.status, String(status)));
+        }
+      }
+      if (date && date !== 'All' && String(date).trim()) {
+        conditions.push(eq(schema.alternativeClasses.date, String(date)));
+      }
+      if (search && String(search).trim()) {
+        const term = `%${String(search).trim()}%`;
+        conditions.push(or(
+          ilike(schema.alternativeClasses.subjectName, term),
+          ilike(schema.alternativeClasses.subjectCode, term),
+          ilike(schema.alternativeClasses.originalFacultyName, term),
+          ilike(schema.alternativeClasses.assignedFacultyName, term),
+          ilike(schema.alternativeClasses.classroom, term)
+        ));
+      }
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const list = await db.select().from(schema.alternativeClasses).where(whereClause).orderBy(desc(schema.alternativeClasses.createdAt));
+
+      csvContent = [
+        ['Assignment ID', 'Leave Request ID', 'Subject Code', 'Subject Name', 'Section', 'Date', 'Start Time', 'End Time', 'Classroom', 'Faculty on Leave', 'Assigned Substitute', 'Status', 'Reason', 'Notes'].map(escapeCsv).join(','),
+        ...list.map((a) => [
+          escapeCsv(a.id),
+          escapeCsv(a.leaveRequestId || 'N/A'),
+          escapeCsv(a.subjectCode),
+          escapeCsv(a.subjectName),
+          escapeCsv(a.section),
+          escapeCsv(a.date),
+          escapeCsv(a.startTime),
+          escapeCsv(a.endTime),
+          escapeCsv(a.classroom),
+          escapeCsv(a.originalFacultyName),
+          escapeCsv(a.assignedFacultyName || 'Unassigned'),
+          escapeCsv(a.status),
+          escapeCsv(a.reason),
+          escapeCsv(a.notes || ''),
+        ].join(',')),
+      ].join('\n');
+
+    } else {
+      // completion / timetable / class-completion
+      const conditions: any[] = [];
+      if (dayOfWeek && dayOfWeek !== 'All') conditions.push(eq(schema.timetableSlots.dayOfWeek, String(dayOfWeek)));
+      if (status && status !== 'All') conditions.push(eq(schema.timetableSlots.status, String(status)));
+      if (department && department !== 'All') conditions.push(eq(schema.timetableSlots.department, String(department)));
+      if (semester && semester !== 'All') conditions.push(eq(schema.timetableSlots.semester, String(semester)));
+      if (search && String(search).trim()) {
+        const term = `%${String(search).trim()}%`;
+        conditions.push(or(
+          ilike(schema.timetableSlots.subjectName, term),
+          ilike(schema.timetableSlots.subjectCode, term),
+          ilike(schema.timetableSlots.facultyName, term),
+          ilike(schema.timetableSlots.classroom, term)
+        ));
+      }
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const list = await db.select().from(schema.timetableSlots).where(whereClause).orderBy(schema.timetableSlots.dayOfWeek, schema.timetableSlots.startTime);
+
+      csvContent = [
+        ['Slot ID', 'Day of Week', 'Start Time', 'End Time', 'Subject Code', 'Subject Name', 'Department', 'Semester', 'Section', 'Classroom', 'Primary Faculty', 'Substitute Faculty', 'Enrolled Students', 'Status', 'Notes'].map(escapeCsv).join(','),
+        ...list.map((t) => [
+          escapeCsv(t.id),
+          escapeCsv(t.dayOfWeek),
+          escapeCsv(t.startTime),
+          escapeCsv(t.endTime),
+          escapeCsv(t.subjectCode),
+          escapeCsv(t.subjectName),
+          escapeCsv(t.department),
+          escapeCsv(t.semester),
+          escapeCsv(t.section),
+          escapeCsv(t.classroom),
+          escapeCsv(t.facultyName),
+          escapeCsv(t.substitutedByName || 'None'),
+          escapeCsv(t.enrolledStudents || 0),
+          escapeCsv(t.status),
+          escapeCsv(t.notes || ''),
+        ].join(',')),
+      ].join('\n');
+    }
+
+    // Log to audit log
+    await logAuditAction(
+      req.user!.id,
+      req.user!.name,
+      'REPORT_EXPORTED',
+      'SYSTEM',
+      `Exported ${type.toUpperCase()} report as CSV (${dateStamp}) with filters: ${JSON.stringify(req.query)}`
+    );
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvContent);
+  } catch (err: any) {
+    console.error('Error exporting CSV report:', err);
+    res.status(500).json({ error: 'Failed to export CSV report' });
+  }
+});
+
+
+// ==========================================
+// 9. AUDIT LOGS (ADMIN & HOD)
+// ==========================================
+
+// PROTECTED: ADMIN & HOD
+apiRouter.get('/audit-logs', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { module } = req.query;
+
+    let logs;
+    if (module && module !== 'All') {
+      logs = await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.module, String(module)))
+        .orderBy(desc(schema.auditLogs.timestamp))
+        .limit(150);
+    } else {
+      logs = await db
+        .select()
+        .from(schema.auditLogs)
+        .orderBy(desc(schema.auditLogs.timestamp))
+        .limit(150);
+    }
+
+    res.json(logs);
+  } catch (err: any) {
+    console.error('Error fetching audit logs:', err);
+    res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
+});
