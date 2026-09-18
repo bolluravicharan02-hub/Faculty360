@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './components/common/Toast';
 import { AppLayout } from './components/layout/AppLayout';
+import { LoginPage } from './pages/LoginPage';
 import { FacultyHome } from './pages/FacultyHome';
 import { HODDashboard } from './pages/HODDashboard';
+import { AdminDashboard } from './pages/AdminDashboard';
 import { SchedulePage } from './pages/SchedulePage';
 import { LeavePage } from './pages/LeavePage';
 import { AlternativeClassesPage } from './pages/AlternativeClassesPage';
@@ -14,8 +16,9 @@ import { AuditLogsPage } from './pages/AuditLogsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AccessDenied } from './components/common/AccessDenied';
 import { Role } from './types';
+import { GraduationCap, Loader2 } from 'lucide-react';
 
-// Role route permissions
+// Strict Role route permissions
 const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   home: ['FACULTY', 'HOD', 'ADMIN'],
   schedule: ['FACULTY', 'HOD', 'ADMIN'],
@@ -24,17 +27,40 @@ const ROUTE_PERMISSIONS: Record<string, Role[]> = {
   faculty: ['FACULTY', 'HOD', 'ADMIN'],
   notifications: ['FACULTY', 'HOD', 'ADMIN'],
   settings: ['FACULTY', 'HOD', 'ADMIN'],
-  reports: ['HOD', 'ADMIN'], // Restricted to HOD & Admin
-  audit: ['ADMIN'],          // Restricted to Admin
+  reports: ['HOD', 'ADMIN'],        // Restricted to HOD & Admin
+  audit: ['ADMIN'],                 // Strictly Admin only
+  admin_dashboard: ['ADMIN'],       // Strictly Admin only
+  hod_dashboard: ['HOD'],           // Strictly HOD only
 };
 
 function MainApp() {
-  const { role } = useAuth();
+  const { user, role, isLoading } = useAuth();
   const [currentPath, setCurrentPath] = useState<string>('home');
 
+  // 1. Initial Session Loading State
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#f9f9ff] flex flex-col items-center justify-center p-4">
+        <div className="w-12 h-12 mb-4 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center">
+          <GraduationCap className="w-6 h-6 text-[#312e81]" />
+        </div>
+        <div className="flex items-center gap-2 text-slate-600 text-sm font-medium">
+          <Loader2 className="w-4 h-4 animate-spin text-[#312e81]" />
+          <span>Verifying institutional session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated Gate: Unauthenticated users ALWAYS see Login
+  if (!user || !role) {
+    return <LoginPage />;
+  }
+
+  // 3. Authenticated Content with Role-Based Route Protection
   const renderContent = () => {
-    // 1. Frontend Route Guard Check
     const allowedRoles = ROUTE_PERMISSIONS[currentPath] || ['FACULTY', 'HOD', 'ADMIN'];
+
     if (!allowedRoles.includes(role)) {
       return (
         <AccessDenied
@@ -45,14 +71,15 @@ function MainApp() {
       );
     }
 
-    // 2. Render target page
     switch (currentPath) {
       case 'home':
-        return role === 'HOD' || role === 'ADMIN' ? (
-          <HODDashboard onNavigate={setCurrentPath} />
-        ) : (
-          <FacultyHome onNavigate={setCurrentPath} />
-        );
+        if (role === 'ADMIN') return <AdminDashboard onNavigate={setCurrentPath} />;
+        if (role === 'HOD') return <HODDashboard onNavigate={setCurrentPath} />;
+        return <FacultyHome onNavigate={setCurrentPath} />;
+      case 'admin_dashboard':
+        return <AdminDashboard onNavigate={setCurrentPath} />;
+      case 'hod_dashboard':
+        return <HODDashboard onNavigate={setCurrentPath} />;
       case 'schedule':
         return <SchedulePage />;
       case 'leave':
@@ -70,11 +97,9 @@ function MainApp() {
       case 'settings':
         return <SettingsPage />;
       default:
-        return role === 'HOD' || role === 'ADMIN' ? (
-          <HODDashboard onNavigate={setCurrentPath} />
-        ) : (
-          <FacultyHome onNavigate={setCurrentPath} />
-        );
+        if (role === 'ADMIN') return <AdminDashboard onNavigate={setCurrentPath} />;
+        if (role === 'HOD') return <HODDashboard onNavigate={setCurrentPath} />;
+        return <FacultyHome onNavigate={setCurrentPath} />;
     }
   };
 

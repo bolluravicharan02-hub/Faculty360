@@ -122,9 +122,9 @@ export const LeavePage: React.FC<LeavePageProps> = ({ onNavigate }) => {
     try {
       setIsSubmitting(true);
       await api.applyLeave({
-        facultyId: user?.id || 'usr-rajesh',
-        facultyName: user?.name || 'Dr. Rajesh Sharma',
-        facultyEmail: user?.email || 'rajesh.sharma@takshashila.edu',
+        facultyId: user?.id,
+        facultyName: user?.name,
+        facultyEmail: user?.email,
         department: user?.departmentName || 'Department of Computer Science & Engineering',
         leaveType,
         startDate,

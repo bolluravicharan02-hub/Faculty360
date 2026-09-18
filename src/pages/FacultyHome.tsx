@@ -48,8 +48,8 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
         api.getAlternativeClasses()
       ]);
       setTimetable(slots);
-      // Find substitution requested for this faculty (or alt-201)
-      const requested = alts.find(a => a.id === 'alt-201' || a.assignedFacultyId === user?.id);
+      // Find substitution requested for this faculty
+      const requested = alts.find(a => a.assignedFacultyId === user?.id);
       if (requested) {
         setAltClass(requested);
         if (requested.status === 'ACCEPTED') setAltStatus('accepted');
@@ -66,8 +66,8 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
     if (!altClass) return;
     try {
       await api.respondToAlternative(altClass.id, action, {
-        id: user?.id || 'usr-rajesh',
-        name: user?.name || 'Dr. Rajesh Sharma'
+        id: user?.id,
+        name: user?.name
       });
       setAltStatus(action === 'accept' ? 'accepted' : 'declined');
       if (action === 'accept') {

@@ -16,16 +16,16 @@ import {
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'faculty360_auth_token';
-const DEFAULT_DEMO_TOKEN = 'demo-hod';
 
-let authToken: string | null = typeof window !== 'undefined' ? (localStorage.getItem(TOKEN_KEY) || DEFAULT_DEMO_TOKEN) : DEFAULT_DEMO_TOKEN;
+let authToken: string | null = typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
+let unauthorizedHandler: (() => void) | null = null;
 
 function getHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...customHeaders,
   };
-  const token = authToken || (typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null) || DEFAULT_DEMO_TOKEN;
+  const token = authToken || (typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null);
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
@@ -33,6 +33,20 @@ function getHeaders(customHeaders: Record<string, string> = {}): Record<string, 
 }
 
 async function handleResponse<T>(res: Response, fallbackError: string): Promise<T> {
+  if (res.status === 401) {
+    if (unauthorizedHandler) {
+      unauthorizedHandler();
+    }
+    let errDetail: any = {};
+    try {
+      errDetail = await res.json();
+    } catch {}
+    const error = new Error(errDetail.error || 'Session expired or unauthenticated. Please sign in.') as Error & { status?: number; code?: string };
+    error.status = 401;
+    error.code = errDetail.code || 'AUTH_EXPIRED';
+    throw error;
+  }
+
   if (!res.ok) {
     let errDetail: any;
     try {
@@ -51,6 +65,11 @@ async function handleResponse<T>(res: Response, fallbackError: string): Promise<
 }
 
 export const api = {
+  // Register unauthorized / session expiration listener
+  onUnauthorized(handler: () => void) {
+    unauthorizedHandler = handler;
+  },
+
   // Token management
   setToken(token: string | null) {
     authToken = token;
@@ -65,38 +84,12 @@ export const api = {
     return authToken;
   },
 
-  // Auth
-  async login(credentials: { email: string; password?: string; roleHint?: string }) {
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(credentials),
-    });
-    const data = await handleResponse<{ token: string; user: UserProfile }>(res, 'Failed to sign in');
-    if (data.token) {
-      this.setToken(data.token);
-    }
-    return data;
-  },
-
-  async switchRole(targetRole: Role) {
-    const res = await fetch(`${API_BASE}/auth/switch-role`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({ targetRole }),
-    });
-    const data = await handleResponse<{ token: string; user: UserProfile }>(res, 'Failed to switch role session');
-    if (data.token) {
-      this.setToken(data.token);
-    }
-    return data;
-  },
-
+  // Auth Profile: validates Supabase token with backend and fetches DB profile
   async getCurrentUser() {
-    const res = await fetch(`${API_BASE}/auth/me`, {
+    const res = await fetch(`${API_BASE}/auth/profile`, {
       headers: getHeaders(),
     });
-    return handleResponse<UserProfile>(res, 'Failed to fetch user');
+    return handleResponse<UserProfile>(res, 'Failed to fetch user profile');
   },
 
   // Departments

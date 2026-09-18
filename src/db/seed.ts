@@ -1,8 +1,11 @@
-import { db } from './index.ts';
+import { db, pool } from './index.ts';
 import {
   departments,
   users,
   faculty,
+  subjects,
+  classrooms,
+  leaveTypes,
   timetableSlots,
   leaveRequests,
   alternativeClasses,
@@ -11,9 +14,10 @@ import {
 } from './schema.ts';
 
 export async function seedDatabase() {
-  console.log('Seeding database with university records...');
+  console.log('Initiating controlled Faculty360 database seed...');
 
   // 1. Departments
+  console.log('Seeding departments...');
   await db.insert(departments).values([
     { id: 'dept-cse', code: 'CSE', name: 'Computer Science & Engineering', hodName: 'Dr. Rajesh Sharma', facultyCount: 38, attendanceRate: 96 },
     { id: 'dept-comm', code: 'COMM', name: 'Commerce & Accounting', hodName: 'Dr. Vandana Rao', facultyCount: 31, attendanceRate: 94 },
@@ -22,8 +26,25 @@ export async function seedDatabase() {
     { id: 'dept-mech', code: 'MECH', name: 'Mechanical Engineering', hodName: 'Dr. Hemant Joshi', facultyCount: 40, attendanceRate: 89 },
   ]).onConflictDoNothing();
 
-  // 2. Users
+  // 2. Demo Users & Profiles
+  console.log('Seeding users...');
   await db.insert(users).values([
+    {
+      id: 'usr-owner',
+      email: 'rct9096wgl@gmail.com',
+      name: 'System Administrator',
+      role: 'ADMIN',
+      facultyId: 'ADMIN-SYS-001',
+      departmentId: null,
+      departmentName: 'Academic Administration & IT',
+      designation: 'Chief Academic Administrator',
+      avatarUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
+      phone: '+91 98000 00001',
+      leaveCasual: 12,
+      leaveMedical: 10,
+      leaveEarned: 10,
+      leaveTotal: 32,
+    },
     {
       id: 'usr-rajesh',
       email: 'rajesh.sharma@takshashila.edu',
@@ -187,6 +208,7 @@ export async function seedDatabase() {
   ]).onConflictDoNothing();
 
   // 3. Faculty Directory
+  console.log('Seeding faculty profiles...');
   await db.insert(faculty).values([
     {
       id: 'usr-rajesh',
@@ -239,7 +261,7 @@ export async function seedDatabase() {
       designation: 'Assistant Professor',
       status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Operating Systems', 'System Programming'],
+      specialization: ['Computer Networks', 'Network Security', 'Cryptography'],
       classesToday: 2,
       attendanceRate: 96,
       leaveBalance: 11,
@@ -251,9 +273,9 @@ export async function seedDatabase() {
       email: 'kv.raman@takshashila.edu',
       department: 'Computer Science & Engineering',
       designation: 'Professor',
-      status: 'In Lecture',
+      status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Compiler Design', 'Formal Languages'],
+      specialization: ['Compiler Design', 'Formal Languages', 'System Software'],
       classesToday: 2,
       attendanceRate: 99,
       leaveBalance: 16,
@@ -267,8 +289,8 @@ export async function seedDatabase() {
       designation: 'Associate Professor',
       status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Machine Learning', 'Artificial Intelligence', 'Data Mining'],
-      classesToday: 2,
+      specialization: ['Artificial Intelligence', 'Machine Learning', 'Deep Learning'],
+      classesToday: 1,
       attendanceRate: 95,
       leaveBalance: 9,
     },
@@ -281,9 +303,9 @@ export async function seedDatabase() {
       designation: 'Assistant Professor',
       status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1567532939604-b6b5b0db2604?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Algorithms', 'Data Structures', 'Python Programming'],
-      classesToday: 1,
-      attendanceRate: 97,
+      specialization: ['Web Technologies', 'Software Engineering', 'UI/UX Design'],
+      classesToday: 2,
+      attendanceRate: 93,
       leaveBalance: 15,
     },
     {
@@ -295,9 +317,9 @@ export async function seedDatabase() {
       designation: 'Assistant Professor',
       status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Data Structures', 'C++ Programming', 'Object Oriented Design'],
-      classesToday: 1,
-      attendanceRate: 96,
+      specialization: ['Embedded Systems', 'IoT Architecture', 'Robotics'],
+      classesToday: 2,
+      attendanceRate: 97,
       leaveBalance: 13,
     },
     {
@@ -309,15 +331,345 @@ export async function seedDatabase() {
       designation: 'Assistant Professor',
       status: 'Present',
       avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      specialization: ['Software Engineering', 'Web Technologies'],
-      classesToday: 2,
+      specialization: ['Cybersecurity', 'Ethical Hacking', 'Blockchain'],
+      classesToday: 1,
       attendanceRate: 92,
       leaveBalance: 10,
     },
   ]).onConflictDoNothing();
 
-  // 4. Timetable
+  // 4. Subjects
+  console.log('Seeding subjects...');
+  await db.insert(subjects).values([
+    {
+      id: 'sub-cs201',
+      code: 'CS-201',
+      name: 'Data Structures & Algorithms',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 3',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Linear and non-linear data structures, asymptotic notation, sorting algorithms, graphs and trees.',
+    },
+    {
+      id: 'sub-cs202',
+      code: 'CS-202',
+      name: 'Database Management Systems',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 4',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Relational model, SQL, normalization, transaction processing, concurrency control, ACID properties.',
+    },
+    {
+      id: 'sub-cs202p',
+      code: 'CS-202P',
+      name: 'Python Programming Lab',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 2,
+      semester: 'Semester 4',
+      type: 'Core',
+      weeklyHours: 3,
+      syllabusSummary: 'Hands-on programming with Python, data structures, scientific computing and test-driven development.',
+    },
+    {
+      id: 'sub-cs301',
+      code: 'CS-301',
+      name: 'Operating Systems & Architecture',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 5',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Process synchronization, CPU scheduling, memory management, virtual memory, file system design.',
+    },
+    {
+      id: 'sub-cs302',
+      code: 'CS-302',
+      name: 'Data Structures & Algorithms',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 3',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Advanced algorithmic paradigms, graph theory, greedy strategies and dynamic programming.',
+    },
+    {
+      id: 'sub-cs303p',
+      code: 'CS-303P',
+      name: 'Data Structures Lab',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 2,
+      semester: 'Semester 3',
+      type: 'Core',
+      weeklyHours: 3,
+      syllabusSummary: 'Implementation and performance profiling of balanced search trees, heaps, and graph search.',
+    },
+    {
+      id: 'sub-cs401',
+      code: 'CS-401',
+      name: 'Compiler Design & Formal Languages',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 7',
+      type: 'Core',
+      weeklyHours: 3,
+      syllabusSummary: 'Lexical analysis, syntax analysis, context-free grammars, intermediate code generation, optimization.',
+    },
+    {
+      id: 'sub-cs402',
+      code: 'CS-402',
+      name: 'Cloud Computing & Distributed Systems',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 3,
+      semester: 'Semester 7',
+      type: 'Elective',
+      weeklyHours: 3,
+      syllabusSummary: 'Virtualization, microservices, consensus protocols, distributed storage, container orchestration.',
+    },
+    {
+      id: 'sub-cs504p',
+      code: 'CS-504P',
+      name: 'Machine Learning Practical',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 2,
+      semester: 'Semester 5',
+      type: 'Core',
+      weeklyHours: 3,
+      syllabusSummary: 'Supervised and unsupervised models, PyTorch pipeline implementation, evaluation and validation metrics.',
+    },
+    {
+      id: 'sub-cs601',
+      code: 'CS-601',
+      name: 'Advanced Algorithms',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 6',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Approximation algorithms, NP-completeness reductions, randomized algorithms and network flow.',
+    },
+    {
+      id: 'sub-cs603',
+      code: 'CS-603',
+      name: 'Cloud Computing Architecture',
+      departmentId: 'dept-cse',
+      departmentName: 'Department of Computer Science & Engineering',
+      credits: 4,
+      semester: 'Semester 7',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Infrastructure as Code, Kubernetes clusters, fault-tolerance and distributed consensus architectures.',
+    },
+    {
+      id: 'sub-ec201',
+      code: 'EC-201',
+      name: 'Digital Signal Processing',
+      departmentId: 'dept-ece',
+      departmentName: 'Department of Electronics & Communication',
+      credits: 4,
+      semester: 'Semester 4',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'DFT, FFT, FIR and IIR filter design, multi-rate signal processing.',
+    },
+    {
+      id: 'sub-mg101',
+      code: 'MG-101',
+      name: 'Principles of Organizational Management',
+      departmentId: 'dept-mgmt',
+      departmentName: 'Department of Management Studies',
+      credits: 3,
+      semester: 'Semester 2',
+      type: 'Core',
+      weeklyHours: 3,
+      syllabusSummary: 'Organizational behavior, strategic planning, human resource management, leadership theories.',
+    },
+    {
+      id: 'sub-cm201',
+      code: 'CM-201',
+      name: 'Advanced Corporate Accounting',
+      departmentId: 'dept-comm',
+      departmentName: 'Department of Commerce & Accounting',
+      credits: 4,
+      semester: 'Semester 4',
+      type: 'Core',
+      weeklyHours: 4,
+      syllabusSummary: 'Valuation of goodwill and shares, liquidation accounts, holding company accounts.',
+    },
+  ]).onConflictDoNothing();
+
+  // 5. Classrooms
+  console.log('Seeding classrooms...');
+  await db.insert(classrooms).values([
+    {
+      id: 'cls-room-204',
+      roomNumber: 'Room 204',
+      building: 'Aryabhata Academic Block',
+      floor: 2,
+      capacity: 70,
+      type: 'Smart Lecture Hall',
+      facilities: ['Smart Interactive Board', 'Dual 4K Projectors', 'Wireless Mic', 'Central Air Conditioning'],
+      status: 'Available',
+    },
+    {
+      id: 'cls-room-301',
+      roomNumber: 'Room 301',
+      building: 'Aryabhata Academic Block',
+      floor: 3,
+      capacity: 65,
+      type: 'Smart Lecture Hall',
+      facilities: ['Interactive Touch Display', 'Document Camera', 'Audio System', 'AC'],
+      status: 'Available',
+    },
+    {
+      id: 'cls-room-305',
+      roomNumber: 'Room 305',
+      building: 'Aryabhata Academic Block',
+      floor: 3,
+      capacity: 70,
+      type: 'Smart Lecture Hall',
+      facilities: ['Dual 4K Projectors', 'Lapel Audio System', 'Smart Board', 'AC'],
+      status: 'Available',
+    },
+    {
+      id: 'cls-cs-lab2',
+      roomNumber: 'Computing Lab 2',
+      building: 'Turing Computing Complex',
+      floor: 1,
+      capacity: 60,
+      type: 'Computer Lab',
+      facilities: ['60 High-Performance Workstations', 'Gigabit Ethernet', 'UPS Backup', 'Overhead Projector', 'AC'],
+      status: 'Available',
+    },
+    {
+      id: 'cls-cs-lab4',
+      roomNumber: 'Computing Lab 4',
+      building: 'Turing Computing Complex',
+      floor: 2,
+      capacity: 60,
+      type: 'Computer Lab',
+      facilities: ['60 Workstations', 'GPU Compute Cluster Access', 'Dual Projectors', 'AC'],
+      status: 'Available',
+    },
+    {
+      id: 'cls-sem-aud-b',
+      roomNumber: 'Auditorium B',
+      building: 'Chanakya Central Complex',
+      floor: 1,
+      capacity: 200,
+      type: 'Auditorium',
+      facilities: ['Surround Sound Audio', 'Stage Lighting', 'Lecture Capture System', 'Full AC'],
+      status: 'Available',
+    },
+  ]).onConflictDoNothing();
+
+  // 6. Leave Types
+  console.log('Seeding leave types...');
+  await db.insert(leaveTypes).values([
+    {
+      id: 'lt-cl',
+      name: 'Casual Leave',
+      code: 'CL',
+      defaultQuota: 12,
+      description: 'For personal urgent affairs, short family duties, or unforeseen exigencies.',
+      requiresDocument: false,
+    },
+    {
+      id: 'lt-ml',
+      name: 'Medical Leave',
+      code: 'ML',
+      defaultQuota: 10,
+      description: 'For certified illness or medical treatment, subject to medical certificate for >2 days.',
+      requiresDocument: true,
+    },
+    {
+      id: 'lt-el',
+      name: 'Earned Leave',
+      code: 'EL',
+      defaultQuota: 15,
+      description: 'Earned annual vacation leave credited based on completed active teaching tenure.',
+      requiresDocument: false,
+    },
+    {
+      id: 'lt-dl',
+      name: 'Duty Leave',
+      code: 'DL',
+      defaultQuota: 15,
+      description: 'For attending academic conferences, doctoral evaluations, syllabus revisions, or university delegations.',
+      requiresDocument: true,
+    },
+  ]).onConflictDoNothing();
+
+  // 7. Full Weekly Timetable (Monday to Friday)
+  console.log('Seeding full weekly timetable...');
   await db.insert(timetableSlots).values([
+    // Monday
+    {
+      id: 'slot-mon-1',
+      dayOfWeek: 'Monday',
+      startTime: '09:00 AM',
+      endTime: '10:00 AM',
+      subjectCode: 'CS-302',
+      subjectName: 'Data Structures & Algorithms',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 204',
+      facultyId: 'usr-arun',
+      facultyName: 'Dr. Arun Kumar',
+      status: 'SCHEDULED',
+      enrolledStudents: 62,
+      notes: 'Binary Trees & Priority Queues',
+    },
+    {
+      id: 'slot-mon-2',
+      dayOfWeek: 'Monday',
+      startTime: '11:00 AM',
+      endTime: '12:00 PM',
+      subjectCode: 'CS-201',
+      subjectName: 'Data Structures',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 305',
+      facultyId: 'usr-rajesh',
+      facultyName: 'Dr. Rajesh Sharma',
+      status: 'SCHEDULED',
+      enrolledStudents: 60,
+      notes: 'Object Oriented Software Architecture',
+    },
+    {
+      id: 'slot-mon-3',
+      dayOfWeek: 'Monday',
+      startTime: '02:00 PM',
+      endTime: '04:00 PM',
+      subjectCode: 'CS-303P',
+      subjectName: 'Data Structures Lab',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Computing Lab 2',
+      facultyId: 'usr-arun',
+      facultyName: 'Dr. Arun Kumar',
+      status: 'SCHEDULED',
+      enrolledStudents: 32,
+      notes: 'AVL Trees & Balance Factor verification',
+    },
+
+    // Tuesday
     {
       id: 'slot-1',
       dayOfWeek: 'Tuesday',
@@ -437,9 +789,169 @@ export async function seedDatabase() {
       enrolledStudents: 75,
       notes: 'HOD Special Lecture',
     },
+
+    // Wednesday
+    {
+      id: 'slot-wed-1',
+      dayOfWeek: 'Wednesday',
+      startTime: '09:00 AM',
+      endTime: '10:00 AM',
+      subjectCode: 'CS-302',
+      subjectName: 'Data Structures & Algorithms',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 204',
+      facultyId: 'usr-arun',
+      facultyName: 'Dr. Arun Kumar',
+      status: 'SCHEDULED',
+      enrolledStudents: 62,
+      notes: 'Graph Algorithms: DFS and BFS',
+    },
+    {
+      id: 'slot-wed-2',
+      dayOfWeek: 'Wednesday',
+      startTime: '10:30 AM',
+      endTime: '11:30 AM',
+      subjectCode: 'CS-301',
+      subjectName: 'Database Management Systems',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE III',
+      semester: 'Semester 5',
+      classroom: 'Room 305',
+      facultyId: 'usr-rajesh',
+      facultyName: 'Dr. Rajesh Sharma',
+      status: 'SCHEDULED',
+      enrolledStudents: 58,
+      notes: 'Transaction Management & ACID properties',
+    },
+    {
+      id: 'slot-wed-3',
+      dayOfWeek: 'Wednesday',
+      startTime: '02:00 PM',
+      endTime: '03:00 PM',
+      subjectCode: 'CS-401',
+      subjectName: 'Compiler Design',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE IV',
+      semester: 'Semester 7',
+      classroom: 'Room 301',
+      facultyId: 'usr-raman',
+      facultyName: 'Prof. K. V. Raman',
+      status: 'SCHEDULED',
+      enrolledStudents: 52,
+      notes: 'Lexical analysis & DFA construction',
+    },
+
+    // Thursday
+    {
+      id: 'slot-thu-1',
+      dayOfWeek: 'Thursday',
+      startTime: '09:00 AM',
+      endTime: '10:00 AM',
+      subjectCode: 'CS-201',
+      subjectName: 'Data Structures',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 204',
+      facultyId: 'usr-rajesh',
+      facultyName: 'Dr. Rajesh Sharma',
+      status: 'SCHEDULED',
+      enrolledStudents: 62,
+      notes: 'Shortest path algorithms (Dijkstra)',
+    },
+    {
+      id: 'slot-thu-2',
+      dayOfWeek: 'Thursday',
+      startTime: '11:00 AM',
+      endTime: '12:00 PM',
+      subjectCode: 'CS-302',
+      subjectName: 'Data Structures & Algorithms',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 204',
+      facultyId: 'usr-arun',
+      facultyName: 'Dr. Arun Kumar',
+      status: 'SCHEDULED',
+      enrolledStudents: 62,
+      notes: 'Minimum Spanning Trees: Kruskal & Prim',
+    },
+    {
+      id: 'slot-thu-3',
+      dayOfWeek: 'Thursday',
+      startTime: '02:00 PM',
+      endTime: '04:00 PM',
+      subjectCode: 'CS-202P',
+      subjectName: 'Python Programming Lab',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Computing Lab 4',
+      facultyId: 'usr-rajesh',
+      facultyName: 'Dr. Rajesh Sharma',
+      status: 'SCHEDULED',
+      enrolledStudents: 30,
+      notes: 'Data pipeline engineering & unit testing',
+    },
+
+    // Friday
+    {
+      id: 'slot-fri-1',
+      dayOfWeek: 'Friday',
+      startTime: '09:00 AM',
+      endTime: '10:00 AM',
+      subjectCode: 'CS-302',
+      subjectName: 'Algorithms Problem Solving',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE II',
+      semester: 'Semester 3',
+      classroom: 'Room 204',
+      facultyId: 'usr-arun',
+      facultyName: 'Dr. Arun Kumar',
+      status: 'SCHEDULED',
+      enrolledStudents: 62,
+      notes: 'Dynamic Programming & Memoization',
+    },
+    {
+      id: 'slot-fri-2',
+      dayOfWeek: 'Friday',
+      startTime: '11:00 AM',
+      endTime: '12:00 PM',
+      subjectCode: 'CS-603',
+      subjectName: 'Cloud Computing Architecture',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE IV',
+      semester: 'Semester 7',
+      classroom: 'Auditorium B',
+      facultyId: 'usr-rajesh',
+      facultyName: 'Dr. Rajesh Sharma',
+      status: 'SCHEDULED',
+      enrolledStudents: 75,
+      notes: 'Kubernetes ingress & Service meshes',
+    },
+    {
+      id: 'slot-fri-3',
+      dayOfWeek: 'Friday',
+      startTime: '02:00 PM',
+      endTime: '04:00 PM',
+      subjectCode: 'CS-504P',
+      subjectName: 'Machine Learning Practical',
+      department: 'Department of Computer Science & Engineering',
+      section: 'B.Tech CSE III',
+      semester: 'Semester 5',
+      classroom: 'Computing Lab 4',
+      facultyId: 'usr-sunita',
+      facultyName: 'Dr. Sunita Rao',
+      status: 'SCHEDULED',
+      enrolledStudents: 45,
+      notes: 'Transfer learning on Vision Transformers',
+    },
   ]).onConflictDoNothing();
 
-  // 5. Leave Requests
+  // 8. Leave Requests
+  console.log('Seeding leave requests...');
   await db.insert(leaveRequests).values([
     {
       id: 'leave-101',
@@ -490,7 +1002,8 @@ export async function seedDatabase() {
     },
   ]).onConflictDoNothing();
 
-  // 6. Alternative Classes
+  // 9. Alternative Classes
+  console.log('Seeding alternative classes...');
   await db.insert(alternativeClasses).values([
     {
       id: 'alt-201',
@@ -528,7 +1041,8 @@ export async function seedDatabase() {
     },
   ]).onConflictDoNothing();
 
-  // 7. Notifications
+  // 10. Notifications
+  console.log('Seeding notifications...');
   await db.insert(notifications).values([
     {
       id: 'notif-1',
@@ -580,7 +1094,8 @@ export async function seedDatabase() {
     },
   ]).onConflictDoNothing();
 
-  // 8. Audit Logs
+  // 11. Audit Logs
+  console.log('Seeding audit logs...');
   await db.insert(auditLogs).values([
     {
       id: 'audit-1',
@@ -619,5 +1134,20 @@ export async function seedDatabase() {
     },
   ]).onConflictDoNothing();
 
-  console.log('Database seeding successfully finished.');
+  console.log('Controlled database seeding successfully completed.');
+}
+
+// Auto-run if executed as standalone script via `tsx src/db/seed.ts` or `npm run seed`
+const isCLI = process.argv[1]?.includes('seed.ts') || process.argv[1]?.includes('seed.js');
+if (isCLI) {
+  seedDatabase()
+    .then(async () => {
+      await pool.end();
+      process.exit(0);
+    })
+    .catch(async (err) => {
+      console.error('Controlled database seed encountered an error:', err);
+      await pool.end();
+      process.exit(1);
+    });
 }

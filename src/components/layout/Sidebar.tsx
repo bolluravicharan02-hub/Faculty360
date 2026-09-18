@@ -9,10 +9,10 @@ import {
   Bell,
   Settings,
   ChevronDown,
-  RotateCcw,
+  LogOut,
   ShieldAlert,
   Lock,
-  Loader2
+  ShieldCheck
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Role } from '../../types';
@@ -24,36 +24,63 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unreadCount = 2 }) => {
-  const { user, role, switchRole, logout, isLoading } = useAuth();
+  const { user, role, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
-  const mainNavItems: Array<{
-    path: string;
-    label: string;
-    icon: any;
-    roles?: Role[];
-    badgeText?: string;
-  }> = [
-    { path: 'home', label: 'Home', icon: Home },
-    { path: 'schedule', label: 'Schedule', icon: Calendar },
-    { path: 'leave', label: 'Leave', icon: CalendarDays },
-    { path: 'classes', label: 'Classes', icon: GraduationCap },
-    { path: 'reports', label: 'Reports', icon: BarChart3, roles: ['HOD', 'ADMIN'], badgeText: 'HOD' },
-  ];
+  const roleTitle = role === 'ADMIN' ? 'University Administrator' : role === 'HOD' ? 'Head of Department' : 'Faculty Member';
 
-  const secondaryNavItems: Array<{
-    path: string;
-    label: string;
-    icon: any;
-    badge?: boolean;
-    roles?: Role[];
-    badgeText?: string;
-  }> = [
-    { path: 'faculty', label: 'Faculty', icon: Users },
-    { path: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount > 0 },
-    { path: 'audit', label: 'Audit Logs', icon: ShieldAlert, roles: ['ADMIN', 'HOD'], badgeText: 'Audit' },
-    { path: 'settings', label: 'Settings', icon: Settings },
-  ];
+  // Role-specific navigation definitions
+  const { mainNavItems, secondaryNavItems } = React.useMemo(() => {
+    if (role === 'ADMIN') {
+      return {
+        mainNavItems: [
+          { path: 'home', label: 'Admin Dashboard', icon: Home },
+          { path: 'faculty', label: 'Faculty Directory', icon: Users },
+          { path: 'reports', label: 'University Reports', icon: BarChart3 },
+          { path: 'audit', label: 'Audit Logs', icon: ShieldAlert },
+        ],
+        secondaryNavItems: [
+          { path: 'schedule', label: 'Timetable Oversight', icon: Calendar },
+          { path: 'leave', label: 'Leave Oversight', icon: CalendarDays },
+          { path: 'classes', label: 'Alternative Classes', icon: GraduationCap },
+          { path: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount > 0 },
+          { path: 'settings', label: 'System Settings', icon: Settings },
+        ],
+      };
+    }
+
+    if (role === 'HOD') {
+      return {
+        mainNavItems: [
+          { path: 'home', label: 'HOD Dashboard', icon: Home },
+          { path: 'schedule', label: 'Department Schedule', icon: Calendar },
+          { path: 'leave', label: 'Leave Reviews', icon: CalendarDays },
+          { path: 'classes', label: 'Alternative Classes', icon: GraduationCap },
+          { path: 'reports', label: 'Department Reports', icon: BarChart3 },
+        ],
+        secondaryNavItems: [
+          { path: 'faculty', label: 'Department Faculty', icon: Users },
+          { path: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount > 0 },
+          { path: 'settings', label: 'Settings', icon: Settings },
+        ],
+      };
+    }
+
+    // Default: FACULTY
+    return {
+      mainNavItems: [
+        { path: 'home', label: 'My Workspace', icon: Home },
+        { path: 'schedule', label: 'My Timetable', icon: Calendar },
+        { path: 'leave', label: 'My Leaves', icon: CalendarDays },
+        { path: 'classes', label: 'Substitute Classes', icon: GraduationCap },
+      ],
+      secondaryNavItems: [
+        { path: 'faculty', label: 'Faculty Directory', icon: Users },
+        { path: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount > 0 },
+        { path: 'settings', label: 'Settings', icon: Settings },
+      ],
+    };
+  }, [role, unreadCount]);
 
   return (
     <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-slate-100 shadow-[0_1px_8px_rgba(0,0,0,0.03)] z-50 flex flex-col justify-between pt-6 pb-5">
@@ -73,31 +100,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unrea
           </div>
         </div>
 
-        {/* Role Segmented Switcher */}
+        {/* Institutional Verified Role Badge */}
         <div className="px-1">
-          <div className="flex items-center justify-between mb-1 text-[11px] font-medium text-slate-500">
-            <span>Role Perspective</span>
-            {isLoading && <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />}
-          </div>
-          <div className="bg-[#f0f3ff] rounded-lg p-1 flex items-center justify-between text-slate-600">
-            {(['FACULTY', 'HOD', 'ADMIN'] as Role[]).map((r) => {
-              const isActive = role === r;
-              return (
-                <button
-                  key={r}
-                  type="button"
-                  disabled={isLoading}
-                  onClick={() => switchRole(r)}
-                  className={`flex-1 text-center py-1 rounded text-xs font-medium transition-all cursor-pointer ${
-                    isActive
-                      ? 'bg-white text-[#1a146b] shadow-[0_1px_4px_rgba(0,0,0,0.06)] font-semibold'
-                      : 'hover:text-slate-900 text-slate-600'
-                  }`}
-                >
-                  {r === 'FACULTY' ? 'Faculty' : r === 'HOD' ? 'HOD' : 'Admin'}
-                </button>
-              );
-            })}
+          <div className="bg-[#f0f3ff] rounded-xl p-2.5 border border-indigo-50 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-[#1a146b] leading-tight">
+                  {roleTitle}
+                </span>
+                <span className="text-[10px] text-slate-500 truncate max-w-[130px]">
+                  {user?.departmentName || 'Academic Staff'}
+                </span>
+              </div>
+            </div>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white text-indigo-900 border border-slate-200/60 font-semibold uppercase">
+              {role}
+            </span>
           </div>
         </div>
 
@@ -202,14 +221,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unrea
             </div>
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 setShowUserMenu(false);
-                logout();
+                await logout();
               }}
-              className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-indigo-700 hover:bg-indigo-50 rounded-lg transition-colors font-medium cursor-pointer"
+              className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-rose-700 hover:bg-rose-50 rounded-lg transition-colors font-medium cursor-pointer"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset to Default View</span>
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
             </button>
           </div>
         )}

@@ -115,8 +115,8 @@ export const AlternativeClassesPage: React.FC = () => {
   const handleAcceptSession = async (altId: string) => {
     try {
       await api.respondToAlternative(altId, 'accept', {
-        id: user?.id || 'usr-rajesh',
-        name: user?.name || 'Dr. Rajesh Sharma'
+        id: user?.id,
+        name: user?.name
       });
       showToast('Substitute class accepted! Timetable roster updated.', 'success');
       await loadAlts();
@@ -131,8 +131,8 @@ export const AlternativeClassesPage: React.FC = () => {
     try {
       setIsSubmittingDecline(true);
       await api.respondToAlternative(declineTargetAlt.id, 'decline', {
-        id: user?.id || 'usr-rajesh',
-        name: user?.name || 'Dr. Rajesh Sharma',
+        id: user?.id,
+        name: user?.name,
         reason: declineReason.trim() || undefined
       });
       showToast('Substitute request declined. HOD has been notified for reassignment.', 'info');

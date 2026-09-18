@@ -21,7 +21,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
   const getPageTitle = (path: string) => {
     switch (path) {
-      case 'home': return role === 'HOD' ? 'Department Overview' : role === 'ADMIN' ? 'University Overview' : 'Academic Workspace';
+      case 'home': return role === 'ADMIN' ? 'University Administration & Governance' : role === 'HOD' ? 'Department Operations & HOD Overview' : 'Faculty Academic Workspace';
+      case 'admin_dashboard': return 'University Administration & Governance';
+      case 'hod_dashboard': return 'Department Operations & HOD Overview';
       case 'schedule': return 'Class Timetable & Schedule';
       case 'leave': return 'Faculty Leave Management';
       case 'classes': return 'Alternative & Substitute Classes';

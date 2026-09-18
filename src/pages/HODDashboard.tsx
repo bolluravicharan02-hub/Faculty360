@@ -143,6 +143,29 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
     return true;
   });
 
+  if (role !== 'HOD') {
+    return (
+      <div className="p-8 text-center bg-white rounded-2xl border border-slate-100 shadow-xs max-w-lg mx-auto mt-12">
+        <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center mx-auto mb-4">
+          <AlertTriangle className="w-6 h-6" />
+        </div>
+        <h2 className="font-serif text-lg font-bold text-slate-900 mb-1">
+          Head of Department Access Required
+        </h2>
+        <p className="text-xs text-slate-500 mb-6">
+          This dashboard is reserved for departmental operational management. Please return to your designated portal.
+        </p>
+        <button
+          type="button"
+          onClick={() => onNavigate('home')}
+          className="px-4 py-2 bg-[#312e81] text-white rounded-xl text-xs font-semibold hover:bg-[#1a146b] transition-colors cursor-pointer"
+        >
+          Return to Dashboard
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col w-full font-sans">
       {/* Editorial Header Block */}
@@ -150,18 +173,14 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
             <span className="font-mono text-[11px] text-[#3947dd] uppercase tracking-widest font-semibold block mb-1">
-              {role === 'ADMIN'
-                ? 'Office of the Dean • Institutional Governance'
-                : 'Department of Computer Science & Engineering'}
+              Department of Computer Science &amp; Engineering • Head of Department Operations
             </span>
             <h1 className="font-serif text-3xl sm:text-4xl text-[#1a146b] font-medium tracking-tight">
-              {role === 'ADMIN'
-                ? 'University Academic Monitoring & Faculty Attendance'
-                : 'Faculty Attendance & Academic Monitoring'}
+              Faculty Attendance &amp; Academic Monitoring
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              Fall Semester 2024 <span className="text-slate-300 mx-1.5">•</span> Academic Week 8{' '}
-              <span className="text-slate-300 mx-1.5">•</span> Real-time Faculty Roster
+              Fall Semester 2026-27 <span className="text-slate-300 mx-1.5">•</span> Department Overview{' '}
+              <span className="text-slate-300 mx-1.5">•</span> Real-time Faculty &amp; Class Roster
             </p>
           </div>
 
@@ -524,7 +543,7 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               <div>
                 <p className="text-2xl font-serif text-[#1a146b] font-semibold">96%</p>
                 <p className="text-xs text-slate-500">
-                  {role === 'ADMIN' ? 'University overall' : 'CSE Department overall'}
+                  CSE Department overall
                 </p>
               </div>
               <span className="font-mono text-xs text-emerald-600 font-medium">Above target (90%)</span>

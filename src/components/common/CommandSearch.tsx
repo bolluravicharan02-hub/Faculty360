@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Search, X, Calendar, User, FileText, Bell, Sparkles, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, X, Calendar, User, FileText, Bell, Sparkles, ArrowRight, ShieldAlert, Building, Home } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 
 interface CommandSearchProps {
   isOpen: boolean;
@@ -8,6 +9,7 @@ interface CommandSearchProps {
 }
 
 export const CommandSearch: React.FC<CommandSearchProps> = ({ isOpen, onClose, onNavigate }) => {
+  const { role } = useAuth();
   const [query, setQuery] = useState('');
 
   useEffect(() => {
@@ -25,16 +27,44 @@ export const CommandSearch: React.FC<CommandSearchProps> = ({ isOpen, onClose, o
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  const quickLinks = useMemo(() => {
+    if (role === 'ADMIN') {
+      return [
+        { label: 'Admin Dashboard & University Overview', path: 'home', category: 'Executive', icon: Home },
+        { label: 'University Faculty Directory & Profiles', path: 'faculty', category: 'Faculty', icon: User },
+        { label: 'Institutional Reports & Analytics', path: 'reports', category: 'Reports', icon: FileText },
+        { label: 'Security Audit Logs & Governance', path: 'audit', category: 'Security', icon: ShieldAlert },
+        { label: 'Class Timetable & Schedule', path: 'schedule', category: 'Schedule', icon: Calendar },
+        { label: 'Faculty Leave Oversight', path: 'leave', category: 'Leave', icon: FileText },
+        { label: 'Alternative Classes & Substitutions', path: 'classes', category: 'Classes', icon: Sparkles },
+        { label: 'System Notifications', path: 'notifications', category: 'Alerts', icon: Bell },
+      ];
+    }
 
-  const quickLinks = [
-    { label: 'Today\'s Schedule', path: 'schedule', category: 'Schedule', icon: Calendar },
-    { label: 'Apply for Leave', path: 'leave', category: 'Leave', icon: FileText },
-    { label: 'Alternative Classes & Substitutions', path: 'classes', category: 'Classes', icon: Sparkles },
-    { label: 'Department Academic Reports', path: 'reports', category: 'Reports', icon: FileText },
-    { label: 'Faculty Directory & Profiles', path: 'faculty', category: 'Faculty', icon: User },
-    { label: 'System Notifications', path: 'notifications', category: 'Alerts', icon: Bell },
-  ];
+    if (role === 'HOD') {
+      return [
+        { label: 'HOD Department Dashboard', path: 'home', category: 'Department', icon: Home },
+        { label: 'Department Class Schedule', path: 'schedule', category: 'Schedule', icon: Calendar },
+        { label: 'Review & Approve Leave Requests', path: 'leave', category: 'Leave', icon: FileText },
+        { label: 'Alternative Classes & Substitutions', path: 'classes', category: 'Classes', icon: Sparkles },
+        { label: 'Department Academic Reports', path: 'reports', category: 'Reports', icon: FileText },
+        { label: 'Department Faculty Directory', path: 'faculty', category: 'Faculty', icon: User },
+        { label: 'System Notifications', path: 'notifications', category: 'Alerts', icon: Bell },
+      ];
+    }
+
+    // Default: FACULTY
+    return [
+      { label: 'My Academic Workspace', path: 'home', category: 'Workspace', icon: Home },
+      { label: 'Today\'s Teaching Schedule', path: 'schedule', category: 'Schedule', icon: Calendar },
+      { label: 'Apply for Leave & Balance', path: 'leave', category: 'Leave', icon: FileText },
+      { label: 'My Substitute Classes', path: 'classes', category: 'Classes', icon: Sparkles },
+      { label: 'Faculty Directory & Profiles', path: 'faculty', category: 'Faculty', icon: User },
+      { label: 'System Notifications', path: 'notifications', category: 'Alerts', icon: Bell },
+    ];
+  }, [role]);
+
+  if (!isOpen) return null;
 
   const filteredLinks = query.trim()
     ? quickLinks.filter(l => l.label.toLowerCase().includes(query.toLowerCase()) || l.category.toLowerCase().includes(query.toLowerCase()))

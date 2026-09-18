@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
 
 export const SettingsPage: React.FC = () => {
-  const { user, role, switchRole } = useAuth();
+  const { user, role } = useAuth();
   const { showToast } = useToast();
 
   const [emailAlerts, setEmailAlerts] = useState(true);
@@ -81,70 +81,50 @@ export const SettingsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Role Switching for Live Demo */}
-        <div className="p-6 bg-white rounded-xl border border-slate-100 shadow-xs flex flex-col gap-3">
+        {/* Verified Institutional Role & Identity */}
+        <div className="p-6 bg-white rounded-xl border border-slate-100 shadow-xs flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-serif text-lg font-semibold text-slate-900">
-                Workspace Role Simulator
+                Institutional Security &amp; Identity
               </h2>
               <p className="text-xs text-slate-500">
-                Switch perspective immediately to test views for Faculty, Department HOD, or University Admin
+                Academic privilege and department affiliations managed by Supabase Auth and Takshashila Registry
               </p>
             </div>
-            <span className="font-mono text-xs px-2.5 py-1 rounded bg-[#312e81] text-white font-medium">
-              Current: {role}
+            <span className="font-mono text-xs px-2.5 py-1 rounded bg-emerald-100 text-emerald-800 font-semibold flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Verified Identity</span>
             </span>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                switchRole('FACULTY');
-                showToast('Switched perspective to Faculty');
-              }}
-              className={`p-3 rounded-xl border text-center transition-all ${
-                role === 'FACULTY'
-                  ? 'border-indigo-600 bg-[#f0f3ff] text-[#1a146b] font-semibold'
-                  : 'border-slate-200 hover:border-slate-300 text-slate-700'
-              }`}
-            >
-              <p className="text-xs">Faculty View</p>
-              <p className="text-[10px] text-slate-400 mt-0.5">Dr. Rajesh (Instructor)</p>
-            </button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+            <div className="p-3.5 rounded-xl border border-slate-100 bg-[#f9f9ff] flex flex-col justify-between">
+              <div>
+                <p className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-medium">Assigned Role</p>
+                <p className="text-sm font-semibold text-[#1a146b] mt-0.5">{role}</p>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-2">Enforced by PostgreSQL DB</p>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                switchRole('HOD');
-                showToast('Switched perspective to Department HOD');
-              }}
-              className={`p-3 rounded-xl border text-center transition-all ${
-                role === 'HOD'
-                  ? 'border-indigo-600 bg-[#f0f3ff] text-[#1a146b] font-semibold'
-                  : 'border-slate-200 hover:border-slate-300 text-slate-700'
-              }`}
-            >
-              <p className="text-xs">HOD View</p>
-              <p className="text-[10px] text-slate-400 mt-0.5">Department Head</p>
-            </button>
+            <div className="p-3.5 rounded-xl border border-slate-100 bg-[#f9f9ff] flex flex-col justify-between">
+              <div>
+                <p className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-medium">Department</p>
+                <p className="text-sm font-semibold text-slate-800 mt-0.5 truncate">{user?.departmentName || 'Computer Science'}</p>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-2">Takshashila University</p>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                switchRole('ADMIN');
-                showToast('Switched perspective to University Admin');
-              }}
-              className={`p-3 rounded-xl border text-center transition-all ${
-                role === 'ADMIN'
-                  ? 'border-indigo-600 bg-[#f0f3ff] text-[#1a146b] font-semibold'
-                  : 'border-slate-200 hover:border-slate-300 text-slate-700'
-              }`}
-            >
-              <p className="text-xs">Dean / Admin</p>
-              <p className="text-[10px] text-slate-400 mt-0.5">Dean Academics</p>
-            </button>
+            <div className="p-3.5 rounded-xl border border-slate-100 bg-[#f9f9ff] flex flex-col justify-between">
+              <div>
+                <p className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-medium">Authentication Provider</p>
+                <p className="text-sm font-semibold text-slate-800 mt-0.5">Supabase Auth</p>
+              </div>
+              <p className="text-[10px] text-emerald-600 font-medium mt-2 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>Strict Token Validation</span>
+              </p>
+            </div>
           </div>
         </div>
 

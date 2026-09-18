@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { TopHeader } from './TopHeader';
 import { CommandSearch } from '../common/CommandSearch';
-import { Home, Calendar, CalendarDays, MoreHorizontal, X } from 'lucide-react';
+import { Home, Calendar, CalendarDays, MoreHorizontal, X, Users, BarChart3, ShieldAlert, GraduationCap } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 interface AppLayoutProps {
@@ -89,26 +89,108 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           <Home className="w-5 h-5" />
           <span className="text-[10px] mt-0.5">Home</span>
         </button>
-        <button
-          type="button"
-          onClick={() => onNavigate('schedule')}
-          className={`flex flex-col items-center justify-center w-16 py-1 ${
-            currentPath === 'schedule' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
-          }`}
-        >
-          <Calendar className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5">Schedule</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => onNavigate('leave')}
-          className={`flex flex-col items-center justify-center w-16 py-1 ${
-            currentPath === 'leave' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
-          }`}
-        >
-          <CalendarDays className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5">Leave</span>
-        </button>
+
+        {role === 'ADMIN' ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onNavigate('faculty')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'faculty' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <Users className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Faculty</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('reports')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'reports' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <BarChart3 className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Reports</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('audit')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'audit' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <ShieldAlert className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Audit</span>
+            </button>
+          </>
+        ) : role === 'HOD' ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onNavigate('schedule')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'schedule' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <Calendar className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Schedule</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('leave')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'leave' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <CalendarDays className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Leave</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('reports')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'reports' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <BarChart3 className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Reports</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => onNavigate('schedule')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'schedule' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <Calendar className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Schedule</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('leave')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'leave' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <CalendarDays className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Leave</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('classes')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'classes' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <GraduationCap className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Classes</span>
+            </button>
+          </>
+        )}
+
         <button
           type="button"
           onClick={() => setIsMobileMenuOpen(true)}

@@ -1,16 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { UserProfile, Role } from '../types';
 import { api } from '../services/api';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
 
 interface AuthContextType {
-  user: UserProfile;
-  role: Role;
+  user: UserProfile | null;
+  role: Role | null;
   isLoading: boolean;
   error: string | null;
-  login: (email: string, password?: string, roleHint?: Role) => Promise<void>;
-  logout: () => void;
-  switchRole: (role: Role) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
   hasRole: (roles: Role | Role[]) => boolean;
   can: (action: string) => boolean;
 }
@@ -19,181 +18,156 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const LOCAL_STORAGE_KEY = 'faculty360_user';
 
-export const DEFAULT_USER: UserProfile = {
-  id: 'usr-rajesh',
-  name: 'Dr. Rajesh Sharma',
-  email: 'rajesh.sharma@takshashila.edu',
-  role: 'HOD',
-  facultyId: 'FAC-CSE-001',
-  departmentId: 'dept-cse',
-  departmentName: 'Department of Computer Science & Engineering',
-  designation: 'Assoc. Professor & HOD',
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  phone: '+91 98450 12345',
-  leaveBalance: { casual: 6, medical: 4, earned: 2, total: 12 },
-};
-
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return DEFAULT_USER;
-  });
-
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Derive active role with fallback to 'HOD'
-  const role: Role = user?.role || 'HOD';
+  // Derive active institutional role strictly from verified user profile
+  const role: Role | null = user?.role || null;
 
-  // Synchronize authentication session with backend on initial load
+  // Sign out cleanly, clear local storage and reset all state
+  const logout = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      if (isSupabaseConfigured && supabase) {
+        await supabase.auth.signOut().catch(() => {});
+      }
+    } finally {
+      api.setToken(null);
+      setUser(null);
+      setError(null);
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Initialize and verify authentication state on mount
   useEffect(() => {
+    // Register auto-logout handler for HTTP 401 unauthenticated / expired sessions
+    api.onUnauthorized(() => {
+      logout();
+    });
+
     const initAuth = async () => {
-      let existingToken = api.getToken();
-      if (!existingToken) {
-        existingToken = 'demo-hod';
-        api.setToken(existingToken);
+      setIsLoading(true);
+      setError(null);
+
+      if (!isSupabaseConfigured || !supabase) {
+        console.warn('Supabase is not configured. User remains unauthenticated.');
+        setUser(null);
+        api.setToken(null);
+        setIsLoading(false);
+        return;
       }
 
       try {
+        // 1. Check for an active Supabase session
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+
+        if (sessionError || !session || !session.access_token) {
+          api.setToken(null);
+          setUser(null);
+          localStorage.removeItem(LOCAL_STORAGE_KEY);
+          setIsLoading(false);
+          return;
+        }
+
+        // 2. Pass Supabase JWT to API client and validate against backend
+        api.setToken(session.access_token);
         const profile = await api.getCurrentUser();
-        if (profile) {
+
+        if (profile && profile.role) {
           setUser(profile);
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(profile));
+        } else {
+          // Account has no university profile: deny access and sign out
+          await logout();
+          setError('Access Denied: No registered university profile found for this account.');
         }
       } catch (err: any) {
-        // Auto-heal session with a fresh role token
-        try {
-          const res = await api.switchRole(user?.role || 'HOD');
-          if (res?.token) api.setToken(res.token);
-          if (res?.user) {
-            setUser(res.user);
-            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(res.user));
-          }
-        } catch {
-          // Graceful fallback to default demo user
-          if (!user) setUser(DEFAULT_USER);
+        console.warn('Authentication verification failed on initial load:', err);
+        await logout();
+        if (err?.code === 'FORBIDDEN_ROLE' || err?.code === 'NO_PROFILE') {
+          setError(err.message || 'Access Denied: Unrecognized academic credentials.');
         }
-      }
-
-      // If Supabase auth is active, listen to auth state changes
-      if (isSupabaseConfigured && supabase) {
-        const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-          if (session?.user?.email) {
-            try {
-              const userProfile = await api.getCurrentUser();
-              setUser(userProfile);
-              localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(userProfile));
-            } catch {
-              // ignore
-            }
-          }
-        });
-        return () => {
-          authListener.subscription.unsubscribe();
-        };
+      } finally {
+        setIsLoading(false);
       }
     };
 
     initAuth();
-  }, []);
 
-  const login = async (email: string, password?: string, roleHint?: Role) => {
+    // Listen to Supabase auth events (TOKEN_REFRESHED, SIGNED_OUT, etc.)
+    if (isSupabaseConfigured && supabase) {
+      const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_OUT' || !session) {
+          api.setToken(null);
+          setUser(null);
+          localStorage.removeItem(LOCAL_STORAGE_KEY);
+          setIsLoading(false);
+        } else if (event === 'TOKEN_REFRESHED' && session?.access_token) {
+          api.setToken(session.access_token);
+        }
+      });
+
+      return () => {
+        authListener.subscription.unsubscribe();
+      };
+    }
+  }, [logout]);
+
+  // Login strictly via Supabase Auth credentials verification
+  const login = async (email: string, password: string) => {
     setIsLoading(true);
     setError(null);
-    try {
-      if (isSupabaseConfigured && supabase && password) {
-        const { error: sbError } = await supabase.auth.signInWithPassword({ email, password });
-        if (sbError) {
-          throw new Error(sbError.message);
-        }
-      }
 
-      // Backend verification & role session token generation
-      const { token, user: userProfile } = await api.login({ email, password, roleHint });
-      if (token) {
-        api.setToken(token);
-      }
-      setUser(userProfile);
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(userProfile));
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed. Please check credentials.');
-      throw err;
-    } finally {
+    if (!isSupabaseConfigured || !supabase) {
       setIsLoading(false);
+      const err = new Error('Supabase authentication service is currently unavailable.');
+      setError(err.message);
+      throw err;
     }
-  };
 
-  const logout = async () => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.auth.signOut().catch(() => {});
-    }
-    // In direct-access mode, reset session to default demo user without kicking out to a login screen
-    api.setToken('demo-hod');
-    setUser(DEFAULT_USER);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(DEFAULT_USER));
-  };
-
-  // Switch role synchronizes with backend token creation so all backend API guards reflect new role immediately!
-  const switchRole = async (newRole: Role) => {
-    setIsLoading(true);
     try {
-      // 1. Request backend to switch role and issue verified HMAC token
-      const res = await api.switchRole(newRole);
-      if (res.token) {
-        api.setToken(res.token);
-      }
-      if (res.user) {
-        setUser(res.user);
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(res.user));
-      }
-    } catch (err) {
-      console.warn('Backend switch-role fallback to local simulation:', err);
-      // Fallback in case of temporary network issue
-      if (!user) return;
-      let updated: UserProfile;
+      // 1. Authenticate with Supabase Auth
+      const { data, error: sbError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-      if (newRole === 'ADMIN') {
-        updated = {
-          ...user,
-          role: 'ADMIN',
-          name: 'Dr. K. S. Somnath',
-          email: 'admin@faculty360.demo',
-          designation: 'Dean of Academic Affairs',
-          departmentName: 'Academic Administration',
-        };
-      } else if (newRole === 'HOD') {
-        updated = {
-          ...user,
-          role: 'HOD',
-          name: 'Dr. Rajesh Sharma',
-          email: 'rajesh.sharma@takshashila.edu',
-          designation: 'Assoc. Professor & HOD',
-          departmentName: 'Department of Computer Science & Engineering',
-        };
-      } else {
-        updated = {
-          ...user,
-          role: 'FACULTY',
-          name: 'Dr. Arun Kumar',
-          email: 'arun.kumar@takshashila.edu',
-          designation: 'Associate Professor',
-          departmentName: 'Department of Computer Science & Engineering',
-        };
+      if (sbError || !data.session?.access_token) {
+        throw new Error(sbError?.message || 'Invalid university login credentials.');
       }
 
-      setUser(updated);
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
+      // 2. Set the verified Supabase Bearer token
+      api.setToken(data.session.access_token);
+
+      // 3. Fetch user profile and institutional role from the university database
+      const profile = await api.getCurrentUser();
+
+      if (!profile || !profile.role) {
+        await supabase.auth.signOut();
+        api.setToken(null);
+        throw new Error('Access Denied: No active academic profile registered for this account.');
+      }
+
+      setUser(profile);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(profile));
+    } catch (err: any) {
+      api.setToken(null);
+      setUser(null);
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+      const msg = err.message || 'Authentication failed. Please check credentials.';
+      setError(msg);
+      throw new Error(msg);
     } finally {
       setIsLoading(false);
     }
   };
 
   const hasRole = (roles: Role | Role[]): boolean => {
+    if (!role) return false;
     if (Array.isArray(roles)) {
       return roles.includes(role);
     }
@@ -201,6 +175,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const can = (action: string): boolean => {
+    if (!role) return false;
     switch (action) {
       case 'review_leave':
       case 'assign_substitute':
@@ -218,7 +193,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       case 'respond_substitute':
       case 'view_schedule':
       case 'view_notifications':
-        return true; // All roles
+        return true; // All authenticated roles
 
       default:
         return false;
@@ -234,7 +209,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         error,
         login,
         logout,
-        switchRole,
         hasRole,
         can,
       }}
