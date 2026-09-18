@@ -42,6 +42,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const { showToast } = useToast();
 
   const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [facultyList, setFacultyList] = useState<FacultyMember[]>([]);
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
@@ -63,6 +64,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const loadDashboardData = async () => {
     try {
       setIsLoading(true);
+      setHasError(false);
       const [
         deptData,
         facData,
@@ -90,6 +92,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       setAltReport(altData || null);
     } catch (err: any) {
       console.error('Failed to load admin dashboard data:', err);
+      setHasError(true);
       showToast('Error loading administrative overview metrics', 'error');
     } finally {
       setIsLoading(false);
@@ -122,7 +125,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     inLectureCount: facultyInLecture,
     onLeaveCount: facultyOnLeave,
     absentCount: facultyOffDuty,
-    avgAttendanceRate: totalFaculty > 0 ? Math.round((facultyPresent / totalFaculty) * 100) : 94.2
+    avgAttendanceRate: totalFaculty > 0 ? Math.round((facultyPresent / totalFaculty) * 100) : 0
   };
 
   // 3. Leave summary stats calculation
@@ -134,12 +137,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
   // 4. Alternative class summary calculation
   const altMetrics = altReport?.metrics || {
-    total: 8,
-    pendingAssignment: 1,
-    offered: 2,
-    accepted: 5,
+    total: 0,
+    pendingAssignment: 0,
+    offered: 0,
+    accepted: 0,
     declined: 0,
-    resolutionRate: 92.5
+    resolutionRate: 0
   };
 
   // Filtered faculty for table
@@ -177,6 +180,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         >
           Return to Workspace
         </button>
+      </div>
+    );
+  }
+
+  if (hasError && facultyList.length === 0) {
+    return (
+      <div className="p-8 text-center bg-white rounded-2xl border border-rose-100 shadow-xs max-w-lg mx-auto mt-12">
+        <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-700 flex items-center justify-center mx-auto mb-4">
+          <AlertTriangle className="w-6 h-6" />
+        </div>
+        <h2 className="font-serif text-lg font-bold text-slate-900 mb-1">
+          Unable to Load Governance Metrics
+        </h2>
+        <p className="text-xs text-slate-500 mb-6">
+          Could not establish secure connection to the institutional database to load university administration metrics.
+        </p>
+        <button
+          type="button"
+          onClick={loadDashboardData}
+          className="px-4 py-2 bg-[#312e81] text-white rounded-xl text-xs font-semibold hover:bg-[#1a146b] transition-colors cursor-pointer"
+        >
+          Retry Loading
+        </button>
+      </div>
+    );
+  }
+
+  if (isLoading && facultyList.length === 0) {
+    return (
+      <div className="p-16 text-center flex flex-col items-center justify-center gap-3">
+        <RefreshCw className="w-6 h-6 text-[#312e81] animate-spin" />
+        <span className="text-xs text-slate-500 font-medium">Loading university governance metrics...</span>
       </div>
     );
   }
@@ -527,7 +562,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {filteredFaculty.slice(0, 8).map((faculty) => {
+              {filteredFaculty.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-slate-400 font-sans">
+                    No faculty members match your filter criteria.
+                  </td>
+                </tr>
+              ) : (
+                filteredFaculty.slice(0, 8).map((faculty) => {
                 const isPresent = faculty.status === 'Present';
                 const isInLecture = faculty.status === 'In Lecture';
                 const isOnLeave = faculty.status === 'On Leave';
@@ -589,7 +631,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                     </td>
                   </tr>
                 );
-              })}
+              }))}
             </tbody>
           </table>
 

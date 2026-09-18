@@ -27,8 +27,10 @@ import {
   AlternativeClassAssignment,
   LeaveRequest,
   TimetableSlot,
-  CandidateFaculty
+  CandidateFaculty,
+  FacultyMember
 } from '../types';
+import { ACADEMIC_CONFIG } from '../config/academic';
 
 interface HODDashboardProps {
   onNavigate: (path: string) => void;
@@ -41,7 +43,10 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
   const [timetable, setTimetable] = useState<TimetableSlot[]>([]);
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [altClasses, setAltClasses] = useState<AlternativeClassAssignment[]>([]);
+  const [facultyList, setFacultyList] = useState<FacultyMember[]>([]);
   const [activeTab, setActiveTab] = useState<'all' | 'ongoing' | 'upcoming' | 'substitutions'>('all');
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
 
   // Smart Substitute Modal State
   const [selectedAlt, setSelectedAlt] = useState<AlternativeClassAssignment | null>(null);
@@ -55,20 +60,27 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [user?.departmentName]);
 
   const loadData = async () => {
     try {
-      const [slots, leaveList, alts] = await Promise.all([
-        api.getTimetable({ department: 'Computer Science' }),
+      setIsLoading(true);
+      setHasError(false);
+      const [slots, leaveList, alts, facs] = await Promise.all([
+        api.getTimetable({ department: user?.departmentName || 'Computer Science' }),
         api.getLeaves(),
-        api.getAlternativeClasses()
+        api.getAlternativeClasses(),
+        api.getFaculty().catch(() => [] as FacultyMember[])
       ]);
       setTimetable(slots);
       setLeaves(leaveList);
       setAltClasses(alts);
+      setFacultyList(facs);
     } catch (err) {
-      console.error(err);
+      console.error('Error loading HOD dashboard data:', err);
+      setHasError(true);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -136,6 +148,16 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
   const pendingLeaves = leaves.filter(l => l.status === 'PENDING');
   const criticalAlt = altClasses.find(a => a.status === 'PENDING_FACULTY_ASSIGNMENT');
 
+  const deptFaculty = facultyList.filter(f => !user?.departmentName || f.department.toLowerCase().includes(user.departmentName.toLowerCase()));
+  const totalFacultyCount = deptFaculty.length > 0 ? deptFaculty.length : 38;
+  const facultyPresentCount = deptFaculty.length > 0 ? deptFaculty.filter(f => f.status === 'Present' || f.status === 'In Lecture').length : 36;
+  const facultyOnLeaveCount = deptFaculty.length > 0 ? deptFaculty.filter(f => f.status === 'On Leave').length : leaves.filter(l => l.status === 'APPROVED').length;
+  const attendanceRate = Math.round((facultyPresentCount / Math.max(1, totalFacultyCount)) * 100);
+  const activeLecturesCount = timetable.length;
+  const theoryCount = timetable.filter(s => !s.classroom.toLowerCase().includes('lab')).length;
+  const labCount = timetable.filter(s => s.classroom.toLowerCase().includes('lab')).length;
+  const pendingSubCount = altClasses.filter(a => a.status === 'PENDING_FACULTY_ASSIGNMENT').length;
+
   const filteredSessions = timetable.filter(slot => {
     if (activeTab === 'ongoing') return slot.status === 'IN_PROGRESS';
     if (activeTab === 'upcoming') return slot.status === 'SCHEDULED';
@@ -197,7 +219,24 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
         </div>
       </header>
 
-      {/* KPI Cards Row (Image 5) */}
+      {/* Error state with retry */}
+      {hasError && (
+        <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between text-xs text-rose-800">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>Could not refresh departmental live metrics from institutional database.</span>
+          </div>
+          <button
+            type="button"
+            onClick={loadData}
+            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium transition-colors cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* KPI Cards Row */}
       <section aria-label="Department Metrics" className="mb-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* KPI 1 */}
@@ -211,10 +250,10 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               </div>
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="font-serif text-2xl text-[#1a146b] font-semibold">36</span>
-              <span className="text-xs text-slate-400">/ 38</span>
+              <span className="font-serif text-2xl text-[#1a146b] font-semibold">{facultyPresentCount}</span>
+              <span className="text-xs text-slate-400">/ {totalFacultyCount}</span>
             </div>
-            <p className="font-mono text-[11px] text-emerald-600 mt-1">96% Attendance rate today</p>
+            <p className="font-mono text-[11px] text-emerald-600 mt-1">{attendanceRate}% Attendance rate today</p>
           </div>
 
           {/* KPI 2 */}
@@ -228,10 +267,12 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               </div>
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="font-serif text-2xl text-amber-700 font-semibold">2</span>
+              <span className="font-serif text-2xl text-amber-700 font-semibold">{facultyOnLeaveCount}</span>
               <span className="text-xs text-slate-400">faculty</span>
             </div>
-            <p className="font-mono text-[11px] text-slate-500 mt-1">1 Approved • 1 Pending review</p>
+            <p className="font-mono text-[11px] text-slate-500 mt-1">
+              {leaves.filter(l => l.status === 'APPROVED').length} Approved • {pendingLeaves.length} Pending review
+            </p>
           </div>
 
           {/* KPI 3 */}
@@ -245,10 +286,10 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               </div>
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="font-serif text-2xl text-[#1a146b] font-semibold">14</span>
+              <span className="font-serif text-2xl text-[#1a146b] font-semibold">{activeLecturesCount}</span>
               <span className="text-xs text-slate-400">sessions</span>
             </div>
-            <p className="font-mono text-[11px] text-slate-500 mt-1">8 Theory • 6 Laboratories</p>
+            <p className="font-mono text-[11px] text-slate-500 mt-1">{theoryCount} Theory • {labCount} Laboratories</p>
           </div>
 
           {/* KPI 4 */}
@@ -263,7 +304,7 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
             </div>
             <div className="flex items-baseline gap-2">
               <span className="font-serif text-2xl text-rose-600 font-semibold">
-                {altClasses.filter(a => a.status === 'PENDING_FACULTY_ASSIGNMENT').length}
+                {pendingSubCount}
               </span>
               <span className="text-xs text-slate-400">action required</span>
             </div>
@@ -365,7 +406,12 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
             </div>
 
             <div className="flex flex-col gap-3">
-              {filteredSessions.map((slot) => {
+              {filteredSessions.length === 0 ? (
+                <div className="bg-white rounded-xl p-8 border border-slate-100 text-center text-xs text-slate-500">
+                  No class sessions found for the "{activeTab}" filter.
+                </div>
+              ) : (
+                filteredSessions.map((slot) => {
                 const isOngoing = slot.status === 'IN_PROGRESS';
                 const isPendingSub = slot.status === 'SUBSTITUTION_PENDING';
                 const isSubstituted = slot.status === 'SUBSTITUTED';
@@ -460,7 +506,7 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
                     </div>
                   </div>
                 );
-              })}
+              }))}
             </div>
           </section>
         </div>

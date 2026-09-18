@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './components/common/Toast';
 import { AppLayout } from './components/layout/AppLayout';
@@ -16,6 +16,7 @@ import { AuditLogsPage } from './pages/AuditLogsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AccessDenied } from './components/common/AccessDenied';
 import { Role } from './types';
+import { api } from './services/api';
 import { GraduationCap, Loader2 } from 'lucide-react';
 
 // Strict Role route permissions
@@ -36,6 +37,34 @@ const ROUTE_PERMISSIONS: Record<string, Role[]> = {
 function MainApp() {
   const { user, role, isLoading } = useAuth();
   const [currentPath, setCurrentPath] = useState<string>('home');
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+
+  const fetchUnreadCount = useCallback(async () => {
+    if (!user?.id) {
+      setUnreadCount(0);
+      return;
+    }
+    try {
+      const items = await api.getNotifications(user.id);
+      const unread = items.filter((n) => !n.read).length;
+      setUnreadCount(unread);
+    } catch (err) {
+      console.error('Failed to fetch notification count:', err);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchUnreadCount();
+    const handleUpdate = () => {
+      fetchUnreadCount();
+    };
+    window.addEventListener('notifications-updated', handleUpdate);
+    const interval = setInterval(fetchUnreadCount, 30000);
+    return () => {
+      window.removeEventListener('notifications-updated', handleUpdate);
+      clearInterval(interval);
+    };
+  }, [fetchUnreadCount, currentPath]);
 
   // 1. Initial Session Loading State
   if (isLoading) {
@@ -104,7 +133,7 @@ function MainApp() {
   };
 
   return (
-    <AppLayout currentPath={currentPath} onNavigate={setCurrentPath} unreadCount={2}>
+    <AppLayout currentPath={currentPath} onNavigate={setCurrentPath} unreadCount={unreadCount}>
       {renderContent()}
     </AppLayout>
   );

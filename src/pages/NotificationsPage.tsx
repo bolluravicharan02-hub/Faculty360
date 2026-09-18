@@ -42,6 +42,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ onNavigate
     try {
       await api.markNotificationRead(id);
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+      window.dispatchEvent(new Event('notifications-updated'));
     } catch (err) {
       console.error(err);
     }
@@ -51,6 +52,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ onNavigate
     try {
       await api.markAllNotificationsRead();
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      window.dispatchEvent(new Event('notifications-updated'));
       showToast('All notifications marked as read.');
     } catch (err) {
       console.error(err);

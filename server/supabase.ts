@@ -45,13 +45,12 @@ export function resolveSupabaseHttpUrl(
   return 'https://placeholder.supabase.co';
 }
 
-// Derive server-side Supabase credentials
-// Primary key: SUPABASE_SERVICE_ROLE_KEY (Never exposed to browser)
-// Fallback keys: SUPABASE_ANON_KEY or VITE_SUPABASE_PUBLISHABLE_KEY
+// Derive authoritative server-side Supabase credentials
+// Primary key: SUPABASE_SERVICE_ROLE_KEY (Server secret, bypasses RLS for privileged management)
+// Secondary fallback: SUPABASE_ANON_KEY (Server-configured anon key)
 const serviceKey =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
-  process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   '';
 
 // Derive HTTP/HTTPS project API endpoint (checking VITE_SUPABASE_URL, then SUPABASE_URL, etc.)
@@ -110,8 +109,24 @@ export async function verifySupabaseToken(
 
   const cleanToken = token.trim();
 
-  // Test token handling for deterministic automated test & QA suites
+  // Test token handling: ONLY permitted when BOTH NODE_ENV === 'test' AND ENABLE_TEST_AUTH === 'true'
+  // In production or when ENABLE_TEST_AUTH !== 'true', test tokens are strictly rejected
   if (cleanToken.startsWith('test-token-')) {
+    const isTestAuthPermitted =
+      process.env.NODE_ENV === 'test' &&
+      process.env.ENABLE_TEST_AUTH === 'true';
+
+    if (!isTestAuthPermitted) {
+      return {
+        user: null,
+        error: {
+          name: 'AuthError',
+          message: 'Unauthorized: Test authentication tokens are strictly disabled in this environment',
+          status: 401,
+        } as AuthError,
+      };
+    }
+
     if (cleanToken === 'test-token-expired') {
       return {
         user: null,

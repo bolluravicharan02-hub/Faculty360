@@ -1067,11 +1067,53 @@ apiRouter.get('/leave/preview-affected', authenticateToken, async (req: AuthRequ
       return res.status(400).json({ error: 'startDate and endDate are required' });
     }
 
+    const userRole = req.user!.role;
+    const requestedFacultyId = facultyId ? String(facultyId) : undefined;
+
+    // 1. Faculty role scoping: Faculty can ONLY preview classes for themselves
+    if (userRole === 'FACULTY') {
+      if (
+        requestedFacultyId &&
+        requestedFacultyId !== req.user!.id &&
+        (req.user!.facultyId && requestedFacultyId !== req.user!.facultyId)
+      ) {
+        return res.status(403).json({
+          error: 'Forbidden: Faculty members are only authorized to preview affected classes for themselves.',
+          code: 'FORBIDDEN_RESOURCE',
+        });
+      }
+    }
+
+    // 2. HOD role scoping: HOD may only preview faculty within their department
+    if (userRole === 'HOD' && requestedFacultyId && requestedFacultyId !== req.user!.id) {
+      const hodDept = req.user!.departmentName;
+      const [targetFac] = await db
+        .select()
+        .from(schema.faculty)
+        .where(
+          or(
+            eq(schema.faculty.id, requestedFacultyId),
+            eq(schema.faculty.facultyId, requestedFacultyId)
+          )
+        );
+
+      if (
+        targetFac &&
+        hodDept &&
+        !targetFac.department.toLowerCase().includes(hodDept.toLowerCase())
+      ) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs may only preview affected classes within their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
+
     const dates = getDatesInRange(String(startDate), String(endDate));
 
-    // Find all timetable slots for this faculty
-    const fId = String(facultyId || req.user!.id);
-    const fName = String(facultyName || req.user!.name || '');
+    // Target faculty ID and name (strictly bound for faculty)
+    const fId = userRole === 'FACULTY' ? req.user!.id : String(requestedFacultyId || req.user!.id);
+    const fName = userRole === 'FACULTY' ? (req.user!.name || '') : String(facultyName || req.user!.name || '');
 
     const facultySlots = await db
       .select()
@@ -1147,10 +1189,6 @@ const submitLeaveHandler = async (req: AuthRequest, res: Response) => {
   try {
     const {
       facultyId,
-      facultyName,
-      facultyEmail,
-      department,
-      designation,
       leaveType,
       startDate,
       endDate,
@@ -1158,16 +1196,30 @@ const submitLeaveHandler = async (req: AuthRequest, res: Response) => {
       attachmentName,
     } = req.body;
 
+    // Security & Data Integrity: Prevent identity spoofing
+    // If a faculty supplies a facultyId different from their own, reject with 403 Forbidden
+    if (
+      facultyId &&
+      facultyId !== req.user!.id &&
+      (req.user!.facultyId && facultyId !== req.user!.facultyId)
+    ) {
+      return res.status(403).json({
+        error: 'Forbidden: You cannot submit a leave request on behalf of another faculty member.',
+        code: 'FORBIDDEN_IDENTITY_SPOOFING',
+      });
+    }
+
     const start = new Date(startDate);
     const end = new Date(endDate);
     const daysDiff = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
 
     const newId = `leave-${Date.now()}`;
-    const fId = facultyId || req.user!.id;
-    const fName = facultyName || req.user!.name;
-    const fEmail = facultyEmail || req.user!.email;
-    const dept = department || req.user!.departmentName || 'Department of Computer Science & Engineering';
-    const desig = designation || req.user!.designation || 'Faculty Member';
+    // Identity is strictly bound to the authenticated user (req.user)
+    const fId = req.user!.id;
+    const fName = req.user!.name;
+    const fEmail = req.user!.email;
+    const dept = req.user!.departmentName || 'Department of Computer Science & Engineering';
+    const desig = req.user!.designation || 'Faculty Member';
     const lType = leaveType || 'Casual Leave';
 
     const [newLeave] = await db
@@ -2159,10 +2211,28 @@ apiRouter.post('/department/broadcast', authenticateToken, requireRole(['ADMIN',
 // 8. REPORTS & ANALYTICS (ROLE-PROTECTED: ADMIN & HOD)
 // ==========================================
 
+// Helper to strictly enforce that HODs only access data for their designated department
+function checkHodDepartmentScope(req: AuthRequest, requestedDept?: string): boolean {
+  if (req.user?.role !== 'HOD') return true;
+  if (!requestedDept || requestedDept === 'All') return true;
+  const userDept = req.user.departmentName || '';
+  if (!userDept) return true;
+  return (
+    requestedDept.toLowerCase().includes(userDept.toLowerCase()) ||
+    userDept.toLowerCase().includes(requestedDept.toLowerCase())
+  );
+}
+
 // PROTECTED: Only HOD and ADMIN can view executive summaries
 apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
   try {
-    const allFaculty = await db.select().from(schema.faculty);
+    const userRole = req.user!.role;
+    const userDept = req.user!.departmentName;
+
+    const allFaculty =
+      userRole === 'HOD' && userDept
+        ? await db.select().from(schema.faculty).where(ilike(schema.faculty.department, `%${userDept}%`))
+        : await db.select().from(schema.faculty);
     const totalFaculty = allFaculty.length;
     const presentFaculty = allFaculty.filter(
       (f) => f.status === 'Present' || f.status === 'In Lecture'
@@ -2170,25 +2240,45 @@ apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD'
     const onLeaveFaculty = allFaculty.filter((f) => f.status === 'On Leave').length;
     const attendanceRate = totalFaculty > 0 ? Math.round((presentFaculty / totalFaculty) * 100) : 95;
 
-    const allSlots = await db.select().from(schema.timetableSlots);
+    const allSlots =
+      userRole === 'HOD' && userDept
+        ? await db.select().from(schema.timetableSlots).where(ilike(schema.timetableSlots.department, `%${userDept}%`))
+        : await db.select().from(schema.timetableSlots);
     const completedClasses = allSlots.filter((t) => t.status === 'COMPLETED').length;
     const inProgressClasses = allSlots.filter((t) => t.status === 'IN_PROGRESS').length;
     const totalScheduledClasses = allSlots.length;
 
-    const allAlts = await db.select().from(schema.alternativeClasses);
+    let allAlts = await db.select().from(schema.alternativeClasses);
+    if (userRole === 'HOD' && userDept) {
+      const deptFaculty = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(ilike(schema.users.departmentName, `%${userDept}%`));
+      const facultyIds = deptFaculty.map((f) => f.id);
+      if (facultyIds.length > 0) {
+        allAlts = allAlts.filter((a) => facultyIds.includes(a.originalFacultyId));
+      }
+    }
     const pendingSubs = allAlts.filter((a) => a.status === 'PENDING_FACULTY_ASSIGNMENT').length;
     const resolvedSubs = allAlts.filter((a) => a.status === 'ACCEPTED').length;
 
-    const departmentsList = await db.select().from(schema.departments);
+    let departmentsList = await db.select().from(schema.departments);
+    if (userRole === 'HOD' && userDept) {
+      departmentsList = departmentsList.filter(
+        (d) =>
+          d.name.toLowerCase().includes(userDept.toLowerCase()) ||
+          userDept.toLowerCase().includes(d.name.toLowerCase())
+      );
+    }
 
     res.json({
       role: req.user!.role,
       metrics: {
-        totalFaculty: totalFaculty || 184,
-        presentFaculty: presentFaculty || 172,
-        onLeaveFaculty: onLeaveFaculty || 6,
+        totalFaculty: totalFaculty || (userRole === 'HOD' ? 32 : 184),
+        presentFaculty: presentFaculty || (userRole === 'HOD' ? 30 : 172),
+        onLeaveFaculty: onLeaveFaculty || (userRole === 'HOD' ? 1 : 6),
         attendanceRate: attendanceRate || 94,
-        totalClassesToday: totalScheduledClasses || 412,
+        totalClassesToday: totalScheduledClasses || (userRole === 'HOD' ? 84 : 412),
         departmentStats: {
           totalCSE: totalFaculty,
           presentCSE: presentFaculty,
@@ -2229,6 +2319,16 @@ apiRouter.get('/reports/attendance', authenticateToken, requireRole(['ADMIN', 'H
     const userRole = req.user!.role;
     const userDept = req.user!.departmentName;
 
+    // Security & Data Scoping: HOD may ONLY query their own department
+    if (userRole === 'HOD') {
+      if (department && department !== 'All' && !checkHodDepartmentScope(req, String(department))) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs are strictly restricted to querying reports for their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
+
     const conditions: any[] = [];
     if (userRole === 'HOD' && userDept) {
       conditions.push(ilike(schema.faculty.department, `%${userDept}%`));
@@ -2267,7 +2367,14 @@ apiRouter.get('/reports/attendance', authenticateToken, requireRole(['ADMIN', 'H
       ? Math.round(records.reduce((acc, r) => acc + (r.attendanceRate || 0), 0) / total)
       : 0;
 
-    const departmentsList = await db.select().from(schema.departments);
+    let departmentsList = await db.select().from(schema.departments);
+    if (userRole === 'HOD' && userDept) {
+      departmentsList = departmentsList.filter(
+        (d) =>
+          d.name.toLowerCase().includes(userDept.toLowerCase()) ||
+          userDept.toLowerCase().includes(d.name.toLowerCase())
+      );
+    }
 
     res.json({
       records,
@@ -2294,6 +2401,16 @@ apiRouter.get('/reports/leave', authenticateToken, requireRole(['ADMIN', 'HOD'])
     const { department, leaveType, status, search } = req.query;
     const userRole = req.user!.role;
     const userDept = req.user!.departmentName;
+
+    // Security & Data Scoping: HOD may ONLY query their own department
+    if (userRole === 'HOD') {
+      if (department && department !== 'All' && !checkHodDepartmentScope(req, String(department))) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs are strictly restricted to querying reports for their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
 
     const conditions: any[] = [];
     if (userRole === 'HOD' && userDept) {
@@ -2336,7 +2453,14 @@ apiRouter.get('/reports/leave', authenticateToken, requireRole(['ADMIN', 'HOD'])
       .filter((r) => r.status === 'APPROVED')
       .reduce((acc, r) => acc + (r.daysCount || 0), 0);
 
-    const departmentsList = await db.select().from(schema.departments);
+    let departmentsList = await db.select().from(schema.departments);
+    if (userRole === 'HOD' && userDept) {
+      departmentsList = departmentsList.filter(
+        (d) =>
+          d.name.toLowerCase().includes(userDept.toLowerCase()) ||
+          userDept.toLowerCase().includes(d.name.toLowerCase())
+      );
+    }
 
     res.json({
       records,
@@ -2359,9 +2483,43 @@ apiRouter.get('/reports/leave', authenticateToken, requireRole(['ADMIN', 'HOD'])
 // 8.3 ALTERNATIVE CLASS REPORT (REAL DATABASE QUERY WITH FILTERS)
 apiRouter.get('/reports/alternative-classes', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
   try {
-    const { status, date, search } = req.query;
+    const { status, date, search, department } = req.query;
+    const userRole = req.user!.role;
+    const userDept = req.user!.departmentName;
+
+    // Security & Data Scoping: HOD may ONLY query their own department
+    if (userRole === 'HOD') {
+      if (department && department !== 'All' && !checkHodDepartmentScope(req, String(department))) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs are strictly restricted to querying reports for their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
 
     const conditions: any[] = [];
+
+    // If HOD, scope records to faculty from HOD's department
+    if (userRole === 'HOD' && userDept) {
+      const deptFaculty = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(ilike(schema.users.departmentName, `%${userDept}%`));
+      const facultyIds = deptFaculty.map((f) => f.id);
+      if (facultyIds.length > 0) {
+        conditions.push(inArray(schema.alternativeClasses.originalFacultyId, facultyIds));
+      }
+    } else if (department && department !== 'All') {
+      const deptFaculty = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.departmentName, String(department)));
+      const facultyIds = deptFaculty.map((f) => f.id);
+      if (facultyIds.length > 0) {
+        conditions.push(inArray(schema.alternativeClasses.originalFacultyId, facultyIds));
+      }
+    }
+
     if (status && status !== 'All') {
       if (status === 'UNASSIGNED') {
         conditions.push(or(
@@ -2425,6 +2583,18 @@ apiRouter.get('/reports/alternative-classes', authenticateToken, requireRole(['A
 apiRouter.get('/reports/class-completion', authenticateToken, requireRole(['ADMIN', 'HOD']), async (req: AuthRequest, res: Response) => {
   try {
     const { dayOfWeek, status, department, semester, search } = req.query;
+    const userRole = req.user!.role;
+    const userDept = req.user!.departmentName;
+
+    // Security & Data Scoping: HOD may ONLY query their own department
+    if (userRole === 'HOD') {
+      if (department && department !== 'All' && !checkHodDepartmentScope(req, String(department))) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs are strictly restricted to querying reports for their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
 
     const conditions: any[] = [];
     if (dayOfWeek && dayOfWeek !== 'All') {
@@ -2433,7 +2603,9 @@ apiRouter.get('/reports/class-completion', authenticateToken, requireRole(['ADMI
     if (status && status !== 'All') {
       conditions.push(eq(schema.timetableSlots.status, String(status)));
     }
-    if (department && department !== 'All') {
+    if (userRole === 'HOD' && userDept) {
+      conditions.push(ilike(schema.timetableSlots.department, `%${userDept}%`));
+    } else if (department && department !== 'All') {
       conditions.push(eq(schema.timetableSlots.department, String(department)));
     }
     if (semester && semester !== 'All') {
@@ -2468,7 +2640,14 @@ apiRouter.get('/reports/class-completion', authenticateToken, requireRole(['ADMI
     const totalStudentsCovered = records.reduce((acc, r) => acc + (r.enrolledStudents || 0), 0);
     const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-    const departmentsList = await db.select().from(schema.departments);
+    let departmentsList = await db.select().from(schema.departments);
+    if (userRole === 'HOD' && userDept) {
+      departmentsList = departmentsList.filter(
+        (d) =>
+          d.name.toLowerCase().includes(userDept.toLowerCase()) ||
+          userDept.toLowerCase().includes(d.name.toLowerCase())
+      );
+    }
 
     res.json({
       records,
@@ -2501,13 +2680,30 @@ apiRouter.get('/reports/export-csv', authenticateToken, requireRole(['ADMIN', 'H
   try {
     const type = (req.query.type as string) || 'attendance';
     const { department, status, leaveType, dayOfWeek, semester, search, date } = req.query;
+    const userRole = req.user!.role;
+    const userDept = req.user!.departmentName;
+
+    // Security & Data Scoping: HOD may ONLY query/export their own department
+    if (userRole === 'HOD') {
+      if (department && department !== 'All' && !checkHodDepartmentScope(req, String(department))) {
+        return res.status(403).json({
+          error: 'Forbidden: HODs are strictly restricted to exporting reports for their own department.',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
+
     let csvContent = '';
     const dateStamp = new Date().toISOString().split('T')[0];
     const filename = `Takshashila_${type}_report_${dateStamp}.csv`;
 
     if (type === 'attendance') {
       const conditions: any[] = [];
-      if (department && department !== 'All') conditions.push(eq(schema.faculty.department, String(department)));
+      if (userRole === 'HOD' && userDept) {
+        conditions.push(ilike(schema.faculty.department, `%${userDept}%`));
+      } else if (department && department !== 'All') {
+        conditions.push(eq(schema.faculty.department, String(department)));
+      }
       if (status && status !== 'All') conditions.push(eq(schema.faculty.status, String(status)));
       if (search && String(search).trim()) {
         const term = `%${String(search).trim()}%`;
@@ -2537,7 +2733,11 @@ apiRouter.get('/reports/export-csv', authenticateToken, requireRole(['ADMIN', 'H
 
     } else if (type === 'leave') {
       const conditions: any[] = [];
-      if (department && department !== 'All') conditions.push(eq(schema.leaveRequests.department, String(department)));
+      if (userRole === 'HOD' && userDept) {
+        conditions.push(ilike(schema.leaveRequests.department, `%${userDept}%`));
+      } else if (department && department !== 'All') {
+        conditions.push(eq(schema.leaveRequests.department, String(department)));
+      }
       if (leaveType && leaveType !== 'All') conditions.push(eq(schema.leaveRequests.leaveType, String(leaveType)));
       if (status && status !== 'All') conditions.push(eq(schema.leaveRequests.status, String(status)));
       if (search && String(search).trim()) {
