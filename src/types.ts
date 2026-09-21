@@ -61,6 +61,30 @@ export interface TimetableSlot {
   substitutedByName?: string;
   enrolledStudents?: number;
   notes?: string;
+  sessionDate?: string; // YYYY-MM-DD when resolved for a specific date
+  sessionId?: string;   // Associated class_sessions record ID
+}
+
+export interface ClassSession {
+  id: string;
+  timetableSlotId?: string | null;
+  sessionDate: string; // YYYY-MM-DD
+  startTime: string;
+  endTime: string;
+  originalFacultyId: string;
+  originalFacultyName?: string;
+  actualFacultyId?: string | null;
+  actualFacultyName?: string | null;
+  status: 'SCHEDULED' | 'SUBSTITUTION_PENDING' | 'SUBSTITUTED' | 'COMPLETED' | 'CANCELLED' | 'IN_PROGRESS';
+  classroom: string;
+  subjectCode: string;
+  subjectName: string;
+  section: string;
+  semester: string;
+  department?: string;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type LeaveType = 'Casual Leave' | 'Medical Leave' | 'On Duty' | 'Earned Leave';

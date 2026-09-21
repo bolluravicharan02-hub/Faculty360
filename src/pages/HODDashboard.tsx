@@ -149,10 +149,10 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
   const criticalAlt = altClasses.find(a => a.status === 'PENDING_FACULTY_ASSIGNMENT');
 
   const deptFaculty = facultyList.filter(f => !user?.departmentName || f.department.toLowerCase().includes(user.departmentName.toLowerCase()));
-  const totalFacultyCount = deptFaculty.length > 0 ? deptFaculty.length : 38;
-  const facultyPresentCount = deptFaculty.length > 0 ? deptFaculty.filter(f => f.status === 'Present' || f.status === 'In Lecture').length : 36;
-  const facultyOnLeaveCount = deptFaculty.length > 0 ? deptFaculty.filter(f => f.status === 'On Leave').length : leaves.filter(l => l.status === 'APPROVED').length;
-  const attendanceRate = Math.round((facultyPresentCount / Math.max(1, totalFacultyCount)) * 100);
+  const totalFacultyCount = deptFaculty.length;
+  const facultyPresentCount = deptFaculty.filter(f => f.status === 'Present' || f.status === 'In Lecture').length;
+  const facultyOnLeaveCount = deptFaculty.filter(f => f.status === 'On Leave').length;
+  const attendanceRate = totalFacultyCount > 0 ? Math.round((facultyPresentCount / totalFacultyCount) * 100) : 0;
   const activeLecturesCount = timetable.length;
   const theoryCount = timetable.filter(s => !s.classroom.toLowerCase().includes('lab')).length;
   const labCount = timetable.filter(s => s.classroom.toLowerCase().includes('lab')).length;
@@ -595,14 +595,14 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               <span className="font-mono text-xs text-emerald-600 font-medium">Above target (90%)</span>
             </div>
             <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-              <div className="bg-[#312e81] h-full rounded-full" style={{ width: '96%' }} />
+              <div className="bg-[#312e81] h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, attendanceRate))}%` }} />
             </div>
             <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5 text-slate-600">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>36/38 checked in • Gates 2 &amp; 4 synced</span>
+                <span>{facultyPresentCount}/{totalFacultyCount} checked in • Access gates synced</span>
               </span>
-              <span className="font-mono text-[10px] text-slate-400">09:30 AM</span>
+              <span className="font-mono text-[10px] text-slate-400">Live</span>
             </div>
           </div>
         </div>
@@ -740,7 +740,7 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-800">Target Group</label>
                 <select className="h-10 px-3 bg-[#f0f3ff] rounded-lg text-xs text-slate-800 outline-none border border-transparent focus:border-indigo-300">
-                  <option>All CSE Department Faculty (38)</option>
+                  <option>All {user?.departmentName || 'Department'} Faculty ({totalFacultyCount})</option>
                   <option>Theory Instructors Only</option>
                   <option>Laboratory Coordinators &amp; TAs</option>
                 </select>

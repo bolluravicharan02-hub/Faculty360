@@ -529,86 +529,71 @@ apiRouter.get('/leave-types', authenticateToken, async (req: AuthRequest, res: R
   }
 });
 
+// Normalized department matching helper
+export const isDepartmentMatch = (deptA?: string | null, deptB?: string | null): boolean => {
+  if (!deptA || !deptB) return false;
+  const clean = (s: string) => s.replace(/^department of\s+/i, '').trim().toLowerCase();
+  const a = clean(deptA);
+  const b = clean(deptB);
+  return a === b || a.includes(b) || b.includes(a);
+};
+
 // Helper to dynamically resolve active HOD user ID for a department
 async function getHodForDepartment(departmentIdOrName?: string | null): Promise<string | null> {
   if (!departmentIdOrName) {
-    const [fallbackHod] = await db
-      .select()
-      .from(schema.users)
-      .where(eq(schema.users.role, 'HOD'))
-      .limit(1);
-    return fallbackHod ? fallbackHod.id : null;
+    console.warn('[getHodForDepartment] No department provided; cannot resolve HOD.');
+    return null;
   }
   const deptTerm = departmentIdOrName.trim();
 
   // 1. Direct query against users table for HOD of this department
-  const hodUsers = await db
+  const allHods = await db
     .select()
     .from(schema.users)
-    .where(
-      and(
-        eq(schema.users.role, 'HOD'),
-        or(
-          eq(schema.users.departmentId, deptTerm),
-          ilike(schema.users.departmentName, `%${deptTerm}%`)
-        )
-      )
-    )
-    .limit(1);
+    .where(eq(schema.users.role, 'HOD'));
 
-  if (hodUsers.length > 0) {
-    return hodUsers[0].id;
+  const matchingHod = allHods.find(
+    (u) =>
+      u.departmentId === deptTerm ||
+      isDepartmentMatch(u.departmentName, deptTerm)
+  );
+
+  if (matchingHod) {
+    return matchingHod.id;
   }
 
   // 2. Query departments table to resolve department by id, code, or name
-  const [dept] = await db
-    .select()
-    .from(schema.departments)
-    .where(
-      or(
-        eq(schema.departments.id, deptTerm),
-        ilike(schema.departments.name, `%${deptTerm}%`),
-        ilike(schema.departments.code, `%${deptTerm}%`)
-      )
-    )
-    .limit(1);
+  const allDepts = await db.select().from(schema.departments);
+  const dept = allDepts.find(
+    (d) =>
+      d.id === deptTerm ||
+      isDepartmentMatch(d.name, deptTerm) ||
+      isDepartmentMatch(d.code, deptTerm)
+  );
 
   if (dept) {
-    const [hodByDeptId] = await db
-      .select()
-      .from(schema.users)
-      .where(
-        and(
-          eq(schema.users.role, 'HOD'),
-          eq(schema.users.departmentId, dept.id)
-        )
-      )
-      .limit(1);
-    if (hodByDeptId) return hodByDeptId.id;
-
-    if (dept.hodName) {
-      const [hodByName] = await db
-        .select()
-        .from(schema.users)
-        .where(
-          and(
-            eq(schema.users.role, 'HOD'),
-            ilike(schema.users.name, `%${dept.hodName}%`)
-          )
-        )
-        .limit(1);
-      if (hodByName) return hodByName.id;
-    }
+    const hodByDept = allHods.find(
+      (u) =>
+        u.departmentId === dept.id ||
+        (dept.hodName && u.name.toLowerCase().includes(dept.hodName.toLowerCase())) ||
+        isDepartmentMatch(u.departmentName, dept.name)
+    );
+    if (hodByDept) return hodByDept.id;
   }
 
-  // 3. Fallback: Any active HOD user in system
-  const [anyHod] = await db
+  console.warn(`[getHodForDepartment] No active HOD found for department "${departmentIdOrName}". Notification/routing skipped.`);
+  return null;
+}
+
+// Helper to resolve user ID from user ID or faculty code
+async function resolveUserId(idOrCode?: string | null): Promise<string | null> {
+  if (!idOrCode) return null;
+  const [user] = await db
     .select()
     .from(schema.users)
-    .where(eq(schema.users.role, 'HOD'))
+    .where(or(eq(schema.users.id, idOrCode), eq(schema.users.facultyId, idOrCode)))
     .limit(1);
-
-  return anyHod ? anyHod.id : null;
+  return user ? user.id : idOrCode;
 }
 
 // ==========================================
@@ -813,6 +798,25 @@ apiRouter.put('/faculty/:id', authenticateToken, requireRole(['ADMIN', 'HOD']), 
     const { id } = req.params;
     const { status, designation, department, specialization } = req.body;
 
+    const [existingFac] = await db
+      .select()
+      .from(schema.faculty)
+      .where(eq(schema.faculty.id, id))
+      .limit(1);
+
+    if (!existingFac) {
+      return res.status(404).json({ error: 'Faculty not found' });
+    }
+
+    if (req.user!.role === 'HOD') {
+      if (!isDepartmentMatch(existingFac.department, req.user!.departmentName)) {
+        return res.status(403).json({
+          error: 'Forbidden: You can only manage faculty members within your department',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
+
     const [updated] = await db
       .update(schema.faculty)
       .set({
@@ -824,10 +828,6 @@ apiRouter.put('/faculty/:id', authenticateToken, requireRole(['ADMIN', 'HOD']), 
       })
       .where(eq(schema.faculty.id, id))
       .returning();
-
-    if (!updated) {
-      return res.status(404).json({ error: 'Faculty not found' });
-    }
 
     await logAuditAction(
       req.user!.id,
@@ -878,35 +878,337 @@ apiRouter.delete('/faculty/:id', authenticateToken, requireRole(['ADMIN']), asyn
 
 apiRouter.get('/timetable', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { day, facultyId, department, semester } = req.query;
+    const caller = req.user!;
+    const { day, date, sessionDate, facultyId, department, semester } = req.query;
 
-    const conditions = [];
-    if (day && day !== 'All') {
-      conditions.push(ilike(schema.timetableSlots.dayOfWeek, String(day)));
+    const targetDate = sessionDate ? String(sessionDate) : date ? String(date) : null;
+    let targetDay = day && day !== 'All' ? String(day) : null;
+
+    if (!targetDay && targetDate) {
+      const [y, m, d] = targetDate.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      targetDay = weekdays[dt.getUTCDay()];
     }
-    if (facultyId && facultyId !== 'All') {
-      conditions.push(
-        or(
-          eq(schema.timetableSlots.facultyId, String(facultyId)),
-          eq(schema.timetableSlots.substitutedBy, String(facultyId))
-        )
-      );
+
+    // Role-based department check for HOD
+    const hodDept = caller.departmentName || '';
+    if (caller.role === 'HOD') {
+      if (department && department !== 'All' && !isDepartmentMatch(String(department), hodDept)) {
+        return res.status(403).json({
+          error: 'Forbidden: You can only query timetable for your department',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
     }
-    if (department && department !== 'All') {
-      conditions.push(ilike(schema.timetableSlots.department, `%${department}%`));
+
+    // Faculty check: can only query their own
+    const ownId = caller.id;
+    const ownFacId = caller.facultyId;
+    if (caller.role === 'FACULTY') {
+      if (facultyId && facultyId !== 'All' && facultyId !== ownId && facultyId !== ownFacId) {
+        return res.status(403).json({
+          error: 'Forbidden: Faculty can only query their own timetable',
+          code: 'FORBIDDEN_RESOURCE',
+        });
+      }
+    }
+
+    // 1. Fetch recurring timetable slots
+    const slotConditions = [];
+    if (targetDay && targetDay !== 'All') {
+      slotConditions.push(ilike(schema.timetableSlots.dayOfWeek, targetDay));
     }
     if (semester && semester !== 'All') {
-      conditions.push(eq(schema.timetableSlots.semester, String(semester)));
+      slotConditions.push(eq(schema.timetableSlots.semester, String(semester)));
+    }
+    if (caller.role === 'ADMIN') {
+      if (department && department !== 'All') {
+        slotConditions.push(ilike(schema.timetableSlots.department, `%${department}%`));
+      }
+    } else if (caller.role === 'HOD') {
+      if (hodDept) {
+        const cleanDept = hodDept.replace(/^Department of\s+/i, '').trim();
+        slotConditions.push(ilike(schema.timetableSlots.department, `%${cleanDept}%`));
+      }
     }
 
-    const slots = conditions.length > 0
-      ? await db.select().from(schema.timetableSlots).where(and(...conditions)).orderBy(schema.timetableSlots.startTime)
+    const baseSlots = slotConditions.length > 0
+      ? await db.select().from(schema.timetableSlots).where(and(...slotConditions)).orderBy(schema.timetableSlots.startTime)
       : await db.select().from(schema.timetableSlots).orderBy(schema.timetableSlots.startTime);
 
-    res.json(slots);
+    // Build faculty name lookup map
+    const [allFaculty, allUsers] = await Promise.all([
+      db.select().from(schema.faculty),
+      db.select().from(schema.users),
+    ]);
+    const facultyNameMap = new Map<string, string>();
+    for (const f of allFaculty) {
+      facultyNameMap.set(f.id, f.name);
+    }
+    for (const u of allUsers) {
+      facultyNameMap.set(u.id, u.name);
+      if (u.facultyId && !facultyNameMap.has(u.facultyId)) {
+        facultyNameMap.set(u.facultyId, u.name);
+      }
+    }
+
+    // If targetDate is provided, resolve date-specific class occurrences using class_sessions!
+    if (targetDate) {
+      const dateSessions = await db
+        .select()
+        .from(schema.classSessions)
+        .where(eq(schema.classSessions.sessionDate, targetDate));
+
+      const sessionBySlotId = new Map<string, typeof schema.classSessions.$inferSelect>();
+      const sessionByKey = new Map<string, typeof schema.classSessions.$inferSelect>();
+      const matchedSessionIds = new Set<string>();
+
+      for (const sess of dateSessions) {
+        if (sess.timetableSlotId) {
+          sessionBySlotId.set(sess.timetableSlotId, sess);
+        }
+        sessionByKey.set(`${sess.startTime}_${sess.subjectCode}_${sess.classroom}`, sess);
+      }
+
+      const resolvedSlots: any[] = [];
+
+      for (const slot of baseSlots) {
+        const matched = sessionBySlotId.get(slot.id) || sessionByKey.get(`${slot.startTime}_${slot.subjectCode}_${slot.classroom}`);
+        let status = slot.status;
+        let substitutedBy: string | null = null;
+        let substitutedByName: string | null = null;
+        let sessionId: string | undefined = undefined;
+
+        if (matched) {
+          matchedSessionIds.add(matched.id);
+          status = matched.status as any;
+          sessionId = matched.id;
+          if (matched.actualFacultyId && matched.actualFacultyId !== matched.originalFacultyId) {
+            substitutedBy = matched.actualFacultyId;
+            substitutedByName = facultyNameMap.get(matched.actualFacultyId) || 'Assigned Substitute';
+          }
+        }
+
+        resolvedSlots.push({
+          ...slot,
+          status,
+          substitutedBy,
+          substitutedByName,
+          sessionDate: targetDate,
+          sessionId,
+        });
+      }
+
+      // Add any standalone class_sessions for this date not matching recurring slots
+      for (const sess of dateSessions) {
+        if (!matchedSessionIds.has(sess.id)) {
+          const subName = sess.actualFacultyId ? facultyNameMap.get(sess.actualFacultyId) || 'Assigned Substitute' : null;
+          resolvedSlots.push({
+            id: sess.id,
+            dayOfWeek: (targetDay as any) || 'Monday',
+            startTime: sess.startTime,
+            endTime: sess.endTime,
+            subjectCode: sess.subjectCode,
+            subjectName: sess.subjectName,
+            department: 'Department of Computer Science & Engineering',
+            section: sess.section,
+            semester: sess.semester,
+            classroom: sess.classroom,
+            facultyId: sess.originalFacultyId,
+            facultyName: facultyNameMap.get(sess.originalFacultyId) || 'Faculty',
+            status: sess.status,
+            substitutedBy: sess.actualFacultyId,
+            substitutedByName: subName,
+            sessionDate: sess.sessionDate,
+            sessionId: sess.id,
+          });
+        }
+      }
+
+      // Filter by role and facultyId
+      let finalSlots = resolvedSlots;
+      if (caller.role === 'ADMIN') {
+        if (facultyId && facultyId !== 'All') {
+          finalSlots = finalSlots.filter(
+            (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
+          );
+        }
+      } else if (caller.role === 'HOD') {
+        if (hodDept) {
+          finalSlots = finalSlots.filter((s) => isDepartmentMatch(s.department, hodDept));
+        }
+        if (facultyId && facultyId !== 'All') {
+          finalSlots = finalSlots.filter(
+            (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
+          );
+        }
+      } else {
+        // FACULTY
+        finalSlots = finalSlots.filter(
+          (s) =>
+            s.facultyId === ownId ||
+            s.facultyId === ownFacId ||
+            s.substitutedBy === ownId ||
+            s.substitutedBy === ownFacId
+        );
+      }
+
+      return res.json(finalSlots);
+    }
+
+    // Recurring weekly timetable view (no specific date requested)
+    let recurringSlots = baseSlots;
+
+    if (caller.role === 'ADMIN') {
+      if (facultyId && facultyId !== 'All') {
+        recurringSlots = recurringSlots.filter(
+          (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
+        );
+      }
+    } else if (caller.role === 'HOD') {
+      if (facultyId && facultyId !== 'All') {
+        recurringSlots = recurringSlots.filter(
+          (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
+        );
+      }
+    } else {
+      // FACULTY
+      recurringSlots = recurringSlots.filter(
+        (s) =>
+          s.facultyId === ownId ||
+          s.facultyId === ownFacId ||
+          s.substitutedBy === ownId ||
+          s.substitutedBy === ownFacId
+      );
+    }
+
+    res.json(recurringSlots);
   } catch (err: any) {
     console.error('Error fetching timetable slots:', err);
     res.status(500).json({ error: 'Failed to fetch timetable' });
+  }
+});
+
+// Class Sessions API: Query dated class sessions
+apiRouter.get('/class-sessions', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const caller = req.user!;
+    const { date, sessionDate, facultyId, status, department } = req.query;
+
+    const targetDate = sessionDate ? String(sessionDate) : date ? String(date) : null;
+    const conditions = [];
+
+    if (targetDate) {
+      conditions.push(eq(schema.classSessions.sessionDate, targetDate));
+    }
+    if (status) {
+      conditions.push(eq(schema.classSessions.status, String(status)));
+    }
+
+    if (caller.role === 'ADMIN') {
+      if (facultyId && facultyId !== 'All') {
+        conditions.push(
+          or(
+            eq(schema.classSessions.originalFacultyId, String(facultyId)),
+            eq(schema.classSessions.actualFacultyId, String(facultyId))
+          )
+        );
+      }
+    } else if (caller.role === 'HOD') {
+      if (facultyId && facultyId !== 'All') {
+        conditions.push(
+          or(
+            eq(schema.classSessions.originalFacultyId, String(facultyId)),
+            eq(schema.classSessions.actualFacultyId, String(facultyId))
+          )
+        );
+      }
+    } else {
+      // FACULTY
+      const ownId = caller.id;
+      const ownFacId = caller.facultyId;
+      const facOrs = [
+        eq(schema.classSessions.originalFacultyId, ownId),
+        eq(schema.classSessions.actualFacultyId, ownId),
+      ];
+      if (ownFacId) {
+        facOrs.push(
+          eq(schema.classSessions.originalFacultyId, ownFacId),
+          eq(schema.classSessions.actualFacultyId, ownFacId)
+        );
+      }
+      conditions.push(or(...facOrs));
+    }
+
+    const sessions = conditions.length > 0
+      ? await db.select().from(schema.classSessions).where(and(...conditions)).orderBy(schema.classSessions.startTime)
+      : await db.select().from(schema.classSessions).orderBy(schema.classSessions.startTime);
+
+    res.json(sessions);
+  } catch (err: any) {
+    console.error('Error fetching class sessions:', err);
+    res.status(500).json({ error: 'Failed to fetch class sessions' });
+  }
+});
+
+apiRouter.get('/class-sessions/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const [session] = await db
+      .select()
+      .from(schema.classSessions)
+      .where(eq(schema.classSessions.id, id))
+      .limit(1);
+
+    if (!session) {
+      return res.status(404).json({ error: 'Class session not found', code: 'NOT_FOUND' });
+    }
+
+    res.json(session);
+  } catch (err: any) {
+    console.error('Error fetching class session:', err);
+    res.status(500).json({ error: 'Failed to fetch class session' });
+  }
+});
+
+apiRouter.put('/class-sessions/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const caller = req.user!;
+    const { status, actualFacultyId, classroom } = req.body;
+
+    const [session] = await db
+      .select()
+      .from(schema.classSessions)
+      .where(eq(schema.classSessions.id, id))
+      .limit(1);
+
+    if (!session) {
+      return res.status(404).json({ error: 'Class session not found', code: 'NOT_FOUND' });
+    }
+
+    // Role check: Admin, HOD, or actual/original faculty
+    const isOwner = session.originalFacultyId === caller.id || session.actualFacultyId === caller.id;
+    if (caller.role !== 'ADMIN' && caller.role !== 'HOD' && !isOwner) {
+      return res.status(403).json({ error: 'Forbidden', code: 'FORBIDDEN_RESOURCE' });
+    }
+
+    const updateData: any = { updatedAt: new Date() };
+    if (status) updateData.status = status;
+    if (actualFacultyId !== undefined) updateData.actualFacultyId = actualFacultyId;
+    if (classroom) updateData.classroom = classroom;
+
+    const [updated] = await db
+      .update(schema.classSessions)
+      .set(updateData)
+      .where(eq(schema.classSessions.id, id))
+      .returning();
+
+    res.json(updated);
+  } catch (err: any) {
+    console.error('Error updating class session:', err);
+    res.status(500).json({ error: 'Failed to update class session' });
   }
 });
 
@@ -1151,23 +1453,6 @@ apiRouter.get('/leave/preview-affected', authenticateToken, async (req: AuthRequ
             classroom: slot.classroom,
             section: slot.section,
             enrolledStudents: slot.enrolledStudents || 60,
-          });
-        }
-      } else if (dayOfWeek !== 'Sunday') {
-        // Fallback for weekdays if faculty has general courses
-        const fallbackSlot = facultySlots[0];
-        if (fallbackSlot) {
-          affectedClasses.push({
-            date: dateStr,
-            dayOfWeek,
-            slotId: fallbackSlot.id,
-            subjectCode: fallbackSlot.subjectCode,
-            subjectName: fallbackSlot.subjectName,
-            startTime: fallbackSlot.startTime,
-            endTime: fallbackSlot.endTime,
-            classroom: fallbackSlot.classroom,
-            section: fallbackSlot.section,
-            enrolledStudents: fallbackSlot.enrolledStudents || 60,
           });
         }
       }
@@ -1460,21 +1745,51 @@ apiRouter.post('/leave/:id/review', authenticateToken, requireRole(['ADMIN', 'HO
         const dayOfWeek = WEEKDAY_NAMES[dateObj.getUTCDay()];
 
         // Match slots for this specific day of week
-        let matchingSlots = facultySlots.filter(
+        const matchingSlots = facultySlots.filter(
           (s) => s.dayOfWeek.toLowerCase() === dayOfWeek.toLowerCase()
         );
 
-        // Fallback for weekdays if no specific slot was seeded for this exact day
-        if (matchingSlots.length === 0 && dayOfWeek !== 'Sunday' && facultySlots.length > 0) {
-          matchingSlots = [facultySlots[0]];
-        }
-
         for (const slot of matchingSlots) {
-          // Update the timetable slot to indicate substitution is pending
-          await db
-            .update(schema.timetableSlots)
-            .set({ status: 'SUBSTITUTION_PENDING' })
-            .where(eq(schema.timetableSlots.id, slot.id));
+          // Track substitution requirement on the specific class session for this sessionDate
+          const origUser = await resolveUserId(leave.facultyId);
+          const [existingSession] = await db
+            .select()
+            .from(schema.classSessions)
+            .where(
+              and(
+                eq(schema.classSessions.sessionDate, dateStr),
+                eq(schema.classSessions.originalFacultyId, origUser || leave.facultyId),
+                eq(schema.classSessions.startTime, slot.startTime),
+                eq(schema.classSessions.subjectCode, slot.subjectCode)
+              )
+            )
+            .limit(1);
+
+          if (existingSession) {
+            await db
+              .update(schema.classSessions)
+              .set({
+                status: 'SUBSTITUTION_PENDING',
+                updatedAt: new Date(),
+              })
+              .where(eq(schema.classSessions.id, existingSession.id));
+          } else if (origUser) {
+            await db.insert(schema.classSessions).values({
+              id: `session-${Date.now()}-${slot.id.replace(/[^a-zA-Z0-9]/g, '')}-${dateStr.replace(/[^0-9]/g, '')}`,
+              timetableSlotId: slot.id,
+              sessionDate: dateStr,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+              originalFacultyId: origUser,
+              actualFacultyId: null,
+              status: 'SUBSTITUTION_PENDING',
+              classroom: slot.classroom,
+              subjectCode: slot.subjectCode,
+              subjectName: slot.subjectName,
+              section: slot.section,
+              semester: slot.semester,
+            });
+          }
 
           // Generate an alternative class record for this specific class date
           const altId = `alt-${Date.now()}-${slot.id.replace(/[^a-zA-Z0-9]/g, '')}-${dateStr.replace(/[^0-9]/g, '')}`;
@@ -1651,12 +1966,32 @@ apiRouter.get('/alternatives/:id/candidates', authenticateToken, requireRole(['A
       return res.status(404).json({ error: 'Alternative class request not found' });
     }
 
+    // Resolve department of the class via original faculty
+    const [originalFaculty] = alt.originalFacultyId
+      ? await db.select().from(schema.faculty).where(eq(schema.faculty.id, alt.originalFacultyId)).limit(1)
+      : [];
+    const classDept = originalFaculty?.department;
+
+    if (req.user!.role === 'HOD') {
+      if (classDept && !isDepartmentMatch(classDept, req.user!.departmentName)) {
+        return res.status(403).json({
+          error: 'Forbidden: You can only view candidates for classes within your department',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
+      }
+    }
+
     const targetDay = getDayNameFromDate(alt.date) || 'Tuesday';
 
-    const facultyList = await db
+    const rawFacultyList = await db
       .select()
       .from(schema.faculty)
       .where(ne(schema.faculty.id, alt.originalFacultyId));
+
+    // Restrict candidate pool to HOD's department using normalized matching
+    const facultyList = req.user!.role === 'HOD'
+      ? rawFacultyList.filter((f) => isDepartmentMatch(f.department, req.user!.departmentName))
+      : rawFacultyList;
 
     const allSlots = await db
       .select()
@@ -1683,17 +2018,38 @@ apiRouter.get('/alternatives/:id/candidates', authenticateToken, requireRole(['A
         )
       );
 
+    const dateSessions = await db
+      .select()
+      .from(schema.classSessions)
+      .where(eq(schema.classSessions.sessionDate, alt.date));
+
     const candidates: CandidateFaculty[] = facultyList.map((f) => {
       let matchScore = 0;
       const matchReasons: string[] = [];
 
-      // 1. Timetable conflict check on the target day of week
-      const conflictSlot = allSlots.find(
+      // 1. Timetable conflict check on the target date/day
+      const sessionConflict = dateSessions.find(
+        (s) =>
+          s.startTime === alt.startTime &&
+          s.status !== 'CANCELLED' &&
+          (s.actualFacultyId === f.id || (s.originalFacultyId === f.id && s.status !== 'SUBSTITUTED'))
+      );
+
+      const recurringSlot = allSlots.find(
         (t) =>
-          (t.facultyId === f.id || t.substitutedBy === f.id) &&
+          t.facultyId === f.id &&
           t.dayOfWeek.toLowerCase() === targetDay.toLowerCase() &&
           t.startTime === alt.startTime
       );
+      const isSubstitutedOut = recurringSlot && dateSessions.some(
+        (s) =>
+          s.startTime === alt.startTime &&
+          s.originalFacultyId === f.id &&
+          s.status === 'SUBSTITUTED' &&
+          s.actualFacultyId !== f.id
+      );
+
+      const conflictSlot = sessionConflict || (recurringSlot && !isSubstitutedOut ? recurringSlot : null);
 
       // 2. Approved leave check on the target date
       const leaveOnDate = allApprovedLeaves.find(
@@ -1719,7 +2075,7 @@ apiRouter.get('/alternatives/:id/candidates', authenticateToken, requireRole(['A
       }
 
       // Department matching
-      const sameDept = f.department.toLowerCase().includes('computer') || f.department.toLowerCase().includes('cse');
+      const sameDept = isDepartmentMatch(f.department, classDept || req.user!.departmentName);
       if (sameDept) {
         matchScore += 25;
         matchReasons.push('Same department');
@@ -1822,19 +2178,14 @@ apiRouter.post('/alternatives/:id/assign', authenticateToken, requireRole(['ADMI
 
     // Department verification: HOD can only assign for classes in their own department
     if (req.user!.role === 'HOD') {
-      const hodDept = req.user!.departmentName;
-      if (hodDept) {
-        const cleanHodDept = hodDept.replace(/^Department of\s+/i, '').trim().toLowerCase();
-        const [origFac] = alt.originalFacultyId
-          ? await db.select().from(schema.faculty).where(eq(schema.faculty.id, alt.originalFacultyId))
-          : [];
-        const origDept = (origFac?.department || '').toLowerCase();
-        if (origFac && !origDept.includes(cleanHodDept) && !cleanHodDept.includes(origDept)) {
-          return res.status(403).json({
-            error: 'Forbidden: HODs can only assign substitutes for classes in their own department.',
-            code: 'FORBIDDEN_DEPARTMENT',
-          });
-        }
+      const [origFac] = alt.originalFacultyId
+        ? await db.select().from(schema.faculty).where(eq(schema.faculty.id, alt.originalFacultyId)).limit(1)
+        : [];
+      if (origFac && !isDepartmentMatch(origFac.department, req.user!.departmentName)) {
+        return res.status(403).json({
+          error: 'Forbidden: You can only assign substitutes for classes within your department',
+          code: 'FORBIDDEN_DEPARTMENT',
+        });
       }
     }
 
@@ -1902,7 +2253,7 @@ apiRouter.post('/alternatives/:id/assign', authenticateToken, requireRole(['ADMI
   }
 });
 
-// Assigned faculty member (or admin/HOD) can accept/decline substitute classes
+// Assigned faculty member (or admin/HOD of that department) can accept/decline substitute classes
 apiRouter.post('/alternatives/:id/respond', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
@@ -1917,19 +2268,33 @@ apiRouter.post('/alternatives/:id/respond', authenticateToken, async (req: AuthR
       return res.status(404).json({ error: 'Alternative class not found' });
     }
 
-    // Role check: Only the assigned faculty, or an Admin/HOD, can respond
-    const isAssigned = alt.assignedFacultyId === req.user!.id;
-    const isPrivileged = req.user!.role === 'ADMIN' || req.user!.role === 'HOD';
+    const [origFaculty] = alt.originalFacultyId
+      ? await db.select().from(schema.faculty).where(eq(schema.faculty.id, alt.originalFacultyId)).limit(1)
+      : [];
+    const classDept = origFaculty?.department;
 
-    if (!isAssigned && !isPrivileged) {
+    const caller = req.user!;
+    const isAssigned = alt.assignedFacultyId === caller.id || alt.assignedFacultyId === caller.facultyId;
+    const isAdmin = caller.role === 'ADMIN';
+    const isDeptHod = caller.role === 'HOD' && isDepartmentMatch(classDept, caller.departmentName);
+
+    if (caller.role === 'HOD' && !isDeptHod) {
       return res.status(403).json({
-        error: 'Forbidden: You can only respond to substitute classes assigned to you.',
-        code: 'NOT_ASSIGNED_FACULTY',
+        error: 'Forbidden: You can only respond to substitute classes within your department',
+        code: 'FORBIDDEN_DEPARTMENT',
+      });
+    }
+
+    if (!isAssigned && !isAdmin && !isDeptHod) {
+      return res.status(403).json({
+        error: 'Forbidden: You can only respond to substitute classes assigned to you',
+        code: 'FORBIDDEN_RESOURCE',
       });
     }
 
     let updatedAlt;
-    const responderName = req.user!.name;
+    const responderName = caller.name;
+    const substituteId = alt.assignedFacultyId || caller.id;
     const substituteName = alt.assignedFacultyName || responderName;
 
     if (action === 'accept') {
@@ -1942,21 +2307,63 @@ apiRouter.post('/alternatives/:id/respond', authenticateToken, async (req: AuthR
         .where(eq(schema.alternativeClasses.id, id))
         .returning();
 
-      // Update timetable slot to show substituted teacher
-      await db
-        .update(schema.timetableSlots)
-        .set({
-          status: 'SUBSTITUTED',
-          substitutedBy: alt.assignedFacultyId || req.user!.id,
-          substitutedByName: substituteName,
-          notes: `Substituted by ${substituteName} (Coverage for ${alt.originalFacultyName})`,
-        })
+      // 1. Find the dated class session using: sessionDate, originalFacultyId, startTime, subjectCode, classroom
+      const [existingSession] = await db
+        .select()
+        .from(schema.classSessions)
         .where(
           and(
-            eq(schema.timetableSlots.startTime, alt.startTime),
-            eq(schema.timetableSlots.subjectCode, alt.subjectCode)
+            eq(schema.classSessions.sessionDate, alt.date),
+            eq(schema.classSessions.originalFacultyId, alt.originalFacultyId),
+            eq(schema.classSessions.startTime, alt.startTime),
+            eq(schema.classSessions.subjectCode, alt.subjectCode),
+            eq(schema.classSessions.classroom, alt.classroom)
           )
-        );
+        )
+        .limit(1);
+
+      if (existingSession) {
+        // 2. Update ONLY that class session: actualFacultyId = substituteId, status = 'SUBSTITUTED'
+        await db
+          .update(schema.classSessions)
+          .set({
+            actualFacultyId: substituteId,
+            status: 'SUBSTITUTED',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.classSessions.id, existingSession.id));
+      } else {
+        // 3. If no session row exists yet, create it from the corresponding timetable slot
+        const [matchingSlot] = await db
+          .select()
+          .from(schema.timetableSlots)
+          .where(
+            and(
+              eq(schema.timetableSlots.startTime, alt.startTime),
+              eq(schema.timetableSlots.subjectCode, alt.subjectCode),
+              eq(schema.timetableSlots.classroom, alt.classroom)
+            )
+          )
+          .limit(1);
+
+        await db.insert(schema.classSessions).values({
+          id: `session-${Date.now()}`,
+          timetableSlotId: matchingSlot ? matchingSlot.id : null,
+          sessionDate: alt.date,
+          startTime: alt.startTime,
+          endTime: alt.endTime,
+          originalFacultyId: alt.originalFacultyId,
+          actualFacultyId: substituteId,
+          status: 'SUBSTITUTED',
+          classroom: alt.classroom,
+          subjectCode: alt.subjectCode,
+          subjectName: alt.subjectName,
+          section: alt.section || (matchingSlot ? matchingSlot.section : 'A'),
+          semester: matchingSlot ? matchingSlot.semester : 'Semester 5',
+        });
+      }
+
+      // 4. Do NOT update recurring timetable slots globally!
 
       // Notify HOD of acceptance
       const [origFaculty] = await db
@@ -2217,10 +2624,7 @@ function checkHodDepartmentScope(req: AuthRequest, requestedDept?: string): bool
   if (!requestedDept || requestedDept === 'All') return true;
   const userDept = req.user.departmentName || '';
   if (!userDept) return true;
-  return (
-    requestedDept.toLowerCase().includes(userDept.toLowerCase()) ||
-    userDept.toLowerCase().includes(requestedDept.toLowerCase())
-  );
+  return isDepartmentMatch(requestedDept, userDept);
 }
 
 // PROTECTED: Only HOD and ADMIN can view executive summaries
@@ -2229,35 +2633,31 @@ apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD'
     const userRole = req.user!.role;
     const userDept = req.user!.departmentName;
 
-    const allFaculty =
-      userRole === 'HOD' && userDept
-        ? await db.select().from(schema.faculty).where(ilike(schema.faculty.department, `%${userDept}%`))
-        : await db.select().from(schema.faculty);
+    const rawFaculty = await db.select().from(schema.faculty);
+    const allFaculty = userRole === 'HOD' && userDept
+      ? rawFaculty.filter((f) => isDepartmentMatch(f.department, userDept))
+      : rawFaculty;
+
     const totalFaculty = allFaculty.length;
     const presentFaculty = allFaculty.filter(
       (f) => f.status === 'Present' || f.status === 'In Lecture'
     ).length;
     const onLeaveFaculty = allFaculty.filter((f) => f.status === 'On Leave').length;
-    const attendanceRate = totalFaculty > 0 ? Math.round((presentFaculty / totalFaculty) * 100) : 95;
+    const attendanceRate = totalFaculty > 0 ? Math.round((presentFaculty / totalFaculty) * 100) : 0;
 
-    const allSlots =
-      userRole === 'HOD' && userDept
-        ? await db.select().from(schema.timetableSlots).where(ilike(schema.timetableSlots.department, `%${userDept}%`))
-        : await db.select().from(schema.timetableSlots);
+    const rawSlots = await db.select().from(schema.timetableSlots);
+    const allSlots = userRole === 'HOD' && userDept
+      ? rawSlots.filter((t) => isDepartmentMatch(t.department, userDept))
+      : rawSlots;
+
     const completedClasses = allSlots.filter((t) => t.status === 'COMPLETED').length;
     const inProgressClasses = allSlots.filter((t) => t.status === 'IN_PROGRESS').length;
     const totalScheduledClasses = allSlots.length;
 
     let allAlts = await db.select().from(schema.alternativeClasses);
     if (userRole === 'HOD' && userDept) {
-      const deptFaculty = await db
-        .select({ id: schema.users.id })
-        .from(schema.users)
-        .where(ilike(schema.users.departmentName, `%${userDept}%`));
-      const facultyIds = deptFaculty.map((f) => f.id);
-      if (facultyIds.length > 0) {
-        allAlts = allAlts.filter((a) => facultyIds.includes(a.originalFacultyId));
-      }
+      const deptFacultyIds = new Set(allFaculty.map((f) => f.id));
+      allAlts = allAlts.filter((a) => deptFacultyIds.has(a.originalFacultyId) || (a.assignedFacultyId && deptFacultyIds.has(a.assignedFacultyId)));
     }
     const pendingSubs = allAlts.filter((a) => a.status === 'PENDING_FACULTY_ASSIGNMENT').length;
     const resolvedSubs = allAlts.filter((a) => a.status === 'ACCEPTED').length;
@@ -2265,20 +2665,34 @@ apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD'
     let departmentsList = await db.select().from(schema.departments);
     if (userRole === 'HOD' && userDept) {
       departmentsList = departmentsList.filter(
-        (d) =>
-          d.name.toLowerCase().includes(userDept.toLowerCase()) ||
-          userDept.toLowerCase().includes(d.name.toLowerCase())
+        (d) => isDepartmentMatch(d.name, userDept) || isDepartmentMatch(d.code, userDept)
       );
     }
+
+    const weekdays = [
+      { short: 'Mon', full: 'Monday' },
+      { short: 'Tue', full: 'Tuesday' },
+      { short: 'Wed', full: 'Wednesday' },
+      { short: 'Thu', full: 'Thursday' },
+      { short: 'Fri', full: 'Friday' },
+    ];
+    const weeklyAttendanceTrend = weekdays.map(({ short, full }) => {
+      const daySlots = allSlots.filter((s) => s.dayOfWeek.toLowerCase() === full.toLowerCase());
+      return {
+        day: short,
+        attendance: attendanceRate,
+        lecturesHeld: daySlots.length,
+      };
+    });
 
     res.json({
       role: req.user!.role,
       metrics: {
-        totalFaculty: totalFaculty || (userRole === 'HOD' ? 32 : 184),
-        presentFaculty: presentFaculty || (userRole === 'HOD' ? 30 : 172),
-        onLeaveFaculty: onLeaveFaculty || (userRole === 'HOD' ? 1 : 6),
-        attendanceRate: attendanceRate || 94,
-        totalClassesToday: totalScheduledClasses || (userRole === 'HOD' ? 84 : 412),
+        totalFaculty,
+        presentFaculty,
+        onLeaveFaculty,
+        attendanceRate,
+        totalClassesToday: totalScheduledClasses,
         departmentStats: {
           totalCSE: totalFaculty,
           presentCSE: presentFaculty,
@@ -2291,20 +2705,19 @@ apiRouter.get('/reports/summary', authenticateToken, requireRole(['ADMIN', 'HOD'
           substitutionsResolved: resolvedSubs,
         },
       },
-      departmentAttendance: departmentsList.map((d) => ({
-        name: d.name,
-        code: d.code,
-        faculty: d.facultyCount,
-        attendance: d.attendanceRate,
-        activeClasses: Math.round(d.facultyCount * 1.2),
-      })),
-      weeklyAttendanceTrend: [
-        { day: 'Mon', attendance: 95, lecturesHeld: 78 },
-        { day: 'Tue', attendance: 94, lecturesHeld: 82 },
-        { day: 'Wed', attendance: 96, lecturesHeld: 80 },
-        { day: 'Thu', attendance: 93, lecturesHeld: 84 },
-        { day: 'Fri', attendance: 91, lecturesHeld: 76 },
-      ],
+      departmentAttendance: departmentsList.map((d) => {
+        const deptSlots = rawSlots.filter(
+          (s) => isDepartmentMatch(s.department, d.name) || isDepartmentMatch(s.department, d.code)
+        );
+        return {
+          name: d.name,
+          code: d.code,
+          faculty: d.facultyCount,
+          attendance: d.attendanceRate,
+          activeClasses: deptSlots.length,
+        };
+      }),
+      weeklyAttendanceTrend,
     });
   } catch (err: any) {
     console.error('Error calculating reports summary:', err);

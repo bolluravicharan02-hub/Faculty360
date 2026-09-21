@@ -144,7 +144,31 @@ export const alternativeClasses = pgTable('alternative_classes', {
   index('idx_alt_status').on(table.status),
 ]);
 
-// 7. Notifications Table
+// 7. Class Sessions (Date-specific Class Occurrences) Table
+export const classSessions = pgTable('class_sessions', {
+  id: text('id').primaryKey(),
+  timetableSlotId: text('timetable_slot_id').references(() => timetableSlots.id, { onDelete: 'set null' }),
+  sessionDate: text('session_date').notNull(),
+  startTime: text('start_time').notNull(),
+  endTime: text('end_time').notNull(),
+  originalFacultyId: text('original_faculty_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  actualFacultyId: text('actual_faculty_id').references(() => users.id, { onDelete: 'set null' }),
+  status: text('status').notNull().default('SCHEDULED'),
+  classroom: text('classroom').notNull(),
+  subjectCode: text('subject_code').notNull(),
+  subjectName: text('subject_name').notNull(),
+  section: text('section').notNull(),
+  semester: text('semester').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('idx_class_sessions_date').on(table.sessionDate),
+  index('idx_class_sessions_orig_fac').on(table.originalFacultyId),
+  index('idx_class_sessions_act_fac').on(table.actualFacultyId),
+  index('idx_class_sessions_slot').on(table.timetableSlotId),
+]);
+
+// 8. Notifications Table
 export const notifications = pgTable('notifications', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -179,7 +203,7 @@ export const auditLogs = pgTable('audit_logs', {
 // 9. Subjects Table
 export const subjects = pgTable('subjects', {
   id: text('id').primaryKey(),
-  code: text('code').notNull().unique(),
+  code: text('code').notNull(),
   name: text('name').notNull(),
   departmentId: text('department_id').references(() => departments.id, { onDelete: 'set null' }),
   departmentName: text('department_name').notNull(),
@@ -197,7 +221,7 @@ export const subjects = pgTable('subjects', {
 // 10. Classrooms Table
 export const classrooms = pgTable('classrooms', {
   id: text('id').primaryKey(),
-  roomNumber: text('room_number').notNull().unique(),
+  roomNumber: text('room_number').notNull(),
   building: text('building').notNull(),
   floor: integer('floor').notNull().default(1),
   capacity: integer('capacity').notNull().default(60),
@@ -277,3 +301,21 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
     references: [users.id],
   }),
 }));
+
+export const classSessionsRelations = relations(classSessions, ({ one }) => ({
+  timetableSlot: one(timetableSlots, {
+    fields: [classSessions.timetableSlotId],
+    references: [timetableSlots.id],
+  }),
+  originalFaculty: one(users, {
+    fields: [classSessions.originalFacultyId],
+    references: [users.id],
+  }),
+  actualFaculty: one(users, {
+    fields: [classSessions.actualFacultyId],
+    references: [users.id],
+  }),
+}));
+
+export type ClassSession = typeof classSessions.$inferSelect;
+export type NewClassSession = typeof classSessions.$inferInsert;

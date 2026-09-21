@@ -1,9 +1,11 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { Pool, PoolConfig } from 'pg';
+import pg from 'pg';
+const { Pool } = pg;
+import type { PoolConfig, Pool as PgPool } from 'pg';
 import * as schema from './schema.ts';
 
 declare global {
-  var _postgresPool: Pool | undefined;
+  var _postgresPool: PgPool | undefined;
 }
 
 /**
@@ -52,7 +54,7 @@ export const getPoolConfig = (): PoolConfig => {
   };
 };
 
-export const createPool = (): Pool => {
+export const createPool = (): PgPool => {
   if (!global._postgresPool) {
     const config = getPoolConfig();
     global._postgresPool = new Pool(config);

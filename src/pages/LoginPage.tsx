@@ -212,6 +212,52 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                     </>
                   )}
                 </button>
+
+                {/* Quick-Fill Demo Credentials */}
+                <div className="pt-2 border-t border-slate-100 mt-1">
+                  <div className="text-[11px] font-medium text-slate-500 mb-1.5 flex items-center justify-between">
+                    <span>Quick-Fill Test Accounts:</span>
+                    <span className="font-mono text-[10px] text-slate-400">PW: Faculty360@Admin2026!</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      id="demo-admin-fill-btn"
+                      onClick={() => {
+                        setEmail('admin@faculty360.demo');
+                        setPassword('Faculty360@Admin2026!');
+                        setFormError(null);
+                      }}
+                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                    >
+                      Admin
+                    </button>
+                    <button
+                      type="button"
+                      id="demo-hod-fill-btn"
+                      onClick={() => {
+                        setEmail('hod@faculty360.demo');
+                        setPassword('Faculty360@Admin2026!');
+                        setFormError(null);
+                      }}
+                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                    >
+                      HOD
+                    </button>
+                    <button
+                      type="button"
+                      id="demo-faculty-fill-btn"
+                      onClick={() => {
+                        setEmail('faculty@faculty360.demo');
+                        setPassword('Faculty360@Admin2026!');
+                        setFormError(null);
+                      }}
+                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                    >
+                      Faculty
+                    </button>
+                  </div>
+                </div>
               </form>
             </>
           ) : (

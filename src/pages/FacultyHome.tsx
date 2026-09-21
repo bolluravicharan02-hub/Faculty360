@@ -50,42 +50,37 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
       setIsLoading(true);
       setHasError(false);
       const currentDay = getCurrentDayName();
+      const todayStr = new Date().toISOString().split('T')[0];
 
-      // Query real timetable slots from the database
+      // Query real timetable slots from the database for today's sessionDate
       const [allSlots, alts] = await Promise.all([
-        api.getTimetable({ day: currentDay }),
+        api.getTimetable({ day: currentDay, date: todayStr, sessionDate: todayStr }),
         api.getAlternativeClasses(),
       ]);
 
-      // Filter slots for current faculty if assigned, or department
+      // Filter slots for current faculty if assigned, or substituted on today's sessionDate
       const userSlots = allSlots.filter(
-        (s) => s.facultyId === user?.id || s.substitutedBy === user?.id
+        (s) =>
+          s.facultyId === user?.id ||
+          s.substitutedBy === user?.id ||
+          (user?.facultyId && s.facultyId === user.facultyId) ||
+          (user?.facultyId && s.substitutedBy === user.facultyId)
       );
-      // Fallback to day slots if user specific not yet tagged, or userSlots
-      setTimetable(userSlots.length > 0 ? userSlots : allSlots.slice(0, 4));
+      setTimetable(userSlots);
 
-      // Find substitution requested for this faculty from database
+      // Find substitution requested specifically for this authenticated faculty from database
       const requested = alts.find(
         (a) =>
-          a.assignedFacultyId === user?.id ||
-          (a.status === 'OFFERED_TO_FACULTY' && a.assignedFacultyId === user?.id)
+          a.assignedFacultyId === user?.id &&
+          a.status === 'OFFERED_TO_FACULTY'
       );
 
       if (requested) {
         setAltClass(requested);
         setAltStatus(requested.status);
       } else {
-        // Look for any pending assignment in user's department as demo/review candidate
-        const pendingDeptAlt = alts.find(
-          (a) => a.status === 'OFFERED_TO_FACULTY' || a.status === 'PENDING_FACULTY_ASSIGNMENT'
-        );
-        if (pendingDeptAlt) {
-          setAltClass(pendingDeptAlt);
-          setAltStatus(pendingDeptAlt.status);
-        } else {
-          setAltClass(null);
-          setAltStatus(null);
-        }
+        setAltClass(null);
+        setAltStatus(null);
       }
     } catch (err) {
       console.error('Failed to load faculty home data:', err);
@@ -359,7 +354,7 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
             ) : timetable.length === 0 ? (
               <div className="bg-white rounded-xl p-8 border border-slate-100 text-center">
                 <Calendar className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm font-medium text-slate-700">No classes scheduled for today</p>
+                <p className="text-sm font-medium text-slate-700">No classes scheduled today.</p>
                 <p className="text-xs text-slate-400 mt-1">
                   Enjoy your preparation and research hours.
                 </p>

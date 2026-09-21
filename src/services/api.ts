@@ -12,6 +12,7 @@ import {
   Subject,
   Classroom,
   AcademicLeaveType,
+  ClassSession,
 } from '../types';
 
 const API_BASE = '/api';
@@ -149,9 +150,18 @@ export const api = {
   },
 
   // Timetable
-  async getTimetable(params?: { day?: string; facultyId?: string; department?: string; semester?: string }) {
+  async getTimetable(params?: {
+    day?: string;
+    date?: string;
+    sessionDate?: string;
+    facultyId?: string;
+    department?: string;
+    semester?: string;
+  }) {
     const query = new URLSearchParams();
     if (params?.day) query.set('day', params.day);
+    if (params?.date) query.set('date', params.date);
+    if (params?.sessionDate) query.set('sessionDate', params.sessionDate);
     if (params?.facultyId) query.set('facultyId', params.facultyId);
     if (params?.department) query.set('department', params.department);
     if (params?.semester) query.set('semester', params.semester);
@@ -168,6 +178,42 @@ export const api = {
       body: JSON.stringify(data),
     });
     return handleResponse<TimetableSlot>(res, 'Failed to create timetable slot');
+  },
+
+  // Class Sessions (Date-specific class occurrences)
+  async getClassSessions(params?: {
+    date?: string;
+    sessionDate?: string;
+    facultyId?: string;
+    status?: string;
+    department?: string;
+  }) {
+    const query = new URLSearchParams();
+    if (params?.date) query.set('date', params.date);
+    if (params?.sessionDate) query.set('sessionDate', params.sessionDate);
+    if (params?.facultyId) query.set('facultyId', params.facultyId);
+    if (params?.status) query.set('status', params.status);
+    if (params?.department) query.set('department', params.department);
+    const res = await fetch(`${API_BASE}/class-sessions?${query.toString()}`, {
+      headers: getHeaders(),
+    });
+    return handleResponse<ClassSession[]>(res, 'Failed to fetch class sessions');
+  },
+
+  async getClassSession(id: string) {
+    const res = await fetch(`${API_BASE}/class-sessions/${id}`, {
+      headers: getHeaders(),
+    });
+    return handleResponse<ClassSession>(res, 'Failed to fetch class session');
+  },
+
+  async updateClassSession(id: string, data: any) {
+    const res = await fetch(`${API_BASE}/class-sessions/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<ClassSession>(res, 'Failed to update class session');
   },
 
   // Leave

@@ -17,6 +17,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
 import { api } from '../services/api';
 import { TimetableSlot } from '../types';
+import { ACADEMIC_CONFIG } from '../config/academic';
 
 export const SchedulePage: React.FC = () => {
   const { user, role } = useAuth();
@@ -72,7 +73,7 @@ export const SchedulePage: React.FC = () => {
             Class Timetable &amp; Schedule
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Fall Semester 2024 • Verified slot allocations and room bookings
+            {ACADEMIC_CONFIG.currentSemester} • Verified slot allocations and room bookings
           </p>
         </div>
 
@@ -128,20 +129,22 @@ export const SchedulePage: React.FC = () => {
           })}
         </div>
 
-        {/* Department Filter */}
-        <div className="flex items-center gap-2 shrink-0">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
-          <select
-            value={selectedDept}
-            onChange={(e) => setSelectedDept(e.target.value)}
-            className="h-8 px-2.5 bg-[#f0f3ff] rounded-lg text-xs text-slate-700 outline-none border border-transparent focus:border-indigo-300"
-          >
-            <option value="All">All Departments</option>
-            <option value="Computer Science">Computer Science</option>
-            <option value="Commerce">Commerce</option>
-            <option value="Management">Management</option>
-          </select>
-        </div>
+        {/* Department Filter (Admin only) */}
+        {role === 'ADMIN' && (
+          <div className="flex items-center gap-2 shrink-0">
+            <Filter className="w-3.5 h-3.5 text-slate-400" />
+            <select
+              value={selectedDept}
+              onChange={(e) => setSelectedDept(e.target.value)}
+              className="h-8 px-2.5 bg-[#f0f3ff] rounded-lg text-xs text-slate-700 outline-none border border-transparent focus:border-indigo-300"
+            >
+              <option value="All">All Departments</option>
+              <option value="Computer Science">Computer Science</option>
+              <option value="Commerce">Commerce</option>
+              <option value="Management">Management</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {/* TIMELINE VIEW */}
@@ -149,7 +152,7 @@ export const SchedulePage: React.FC = () => {
         <div className="flex flex-col gap-3">
           {timetable.length === 0 ? (
             <div className="p-12 text-center bg-white rounded-xl border border-slate-100 text-slate-500 text-xs">
-              No classes scheduled for {selectedDay} in {selectedDept}.
+              No classes scheduled for {selectedDay}.
             </div>
           ) : (
             timetable.map((slot) => {

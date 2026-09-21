@@ -608,8 +608,8 @@ export const ReportsPage: React.FC = () => {
             )}
           </div>
 
-          {/* Department Filter (For Attendance, Leave, and Completion) */}
-          {activeReport !== 'alternative' && (
+          {/* Department Filter (For Attendance, Leave, and Completion - Admin only) */}
+          {activeReport !== 'alternative' && role === 'ADMIN' && (
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-slate-500 font-medium">Department:</span>
               <select

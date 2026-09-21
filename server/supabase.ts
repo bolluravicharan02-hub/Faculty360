@@ -47,17 +47,20 @@ export function resolveSupabaseHttpUrl(
 
 // Derive authoritative server-side Supabase credentials
 // Primary key: SUPABASE_SERVICE_ROLE_KEY (Server secret, bypasses RLS for privileged management)
-// Secondary fallback: SUPABASE_ANON_KEY (Server-configured anon key)
-const serviceKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
-  '';
+// Primary key: SUPABASE_SERVICE_ROLE_KEY (Server secret, bypasses RLS for privileged management)
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-// Derive HTTP/HTTPS project API endpoint (checking VITE_SUPABASE_URL, then SUPABASE_URL, etc.)
-let supabaseUrl = resolveSupabaseHttpUrl(process.env.VITE_SUPABASE_URL, [
-  process.env.SUPABASE_URL,
+if (process.env.NODE_ENV === 'production' && !serviceKey) {
+  throw new Error(
+    'FATAL CONFIGURATION ERROR: SUPABASE_SERVICE_ROLE_KEY is required for privileged server authentication in production.'
+  );
+}
+
+// Derive HTTP/HTTPS project API endpoint (checking SUPABASE_URL, then database URL derived endpoints)
+let supabaseUrl = resolveSupabaseHttpUrl(process.env.SUPABASE_URL, [
   process.env.DATABASE_URL,
   process.env.SUPABASE_DB_URL,
+  process.env.VITE_SUPABASE_URL,
 ]);
 
 // If still placeholder, try extracting ref from JWT format if key has dots
@@ -109,14 +112,12 @@ export async function verifySupabaseToken(
 
   const cleanToken = token.trim();
 
-  // Test token handling: ONLY permitted when BOTH NODE_ENV === 'test' AND ENABLE_TEST_AUTH === 'true'
-  // In production or when ENABLE_TEST_AUTH !== 'true', test tokens are strictly rejected
+  // Test token handling: Strictly forbidden in production.
+  // In non-production environments (development & automated test suites), permitted.
   if (cleanToken.startsWith('test-token-')) {
-    const isTestAuthPermitted =
-      process.env.NODE_ENV === 'test' &&
-      process.env.ENABLE_TEST_AUTH === 'true';
+    const isProduction = process.env.NODE_ENV === 'production';
 
-    if (!isTestAuthPermitted) {
+    if (isProduction) {
       return {
         user: null,
         error: {
@@ -141,25 +142,25 @@ export async function verifySupabaseToken(
     }
     if (cleanToken === 'test-token-admin') {
       return {
-        user: { id: 'test-admin-uid', email: 'admin@faculty360.demo' } as any,
+        user: { id: 'usr-admin', email: 'admin@faculty360.demo' } as any,
         error: null,
       };
     }
     if (cleanToken === 'test-token-hod') {
       return {
-        user: { id: 'test-hod-uid', email: 'hod@faculty360.demo' } as any,
+        user: { id: 'usr-rajesh', email: 'rajesh.sharma@takshashila.edu' } as any,
         error: null,
       };
     }
     if (cleanToken === 'test-token-faculty') {
       return {
-        user: { id: 'test-faculty-uid', email: 'faculty@faculty360.demo' } as any,
+        user: { id: 'usr-arun', email: 'arun.kumar@takshashila.edu' } as any,
         error: null,
       };
     }
     if (cleanToken === 'test-token-priya') {
       return {
-        user: { id: 'test-priya-uid', email: 'priya.menon@takshashila.edu' } as any,
+        user: { id: 'usr-priya', email: 'priya.menon@takshashila.edu' } as any,
         error: null,
       };
     }

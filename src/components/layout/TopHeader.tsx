@@ -13,7 +13,7 @@ interface TopHeaderProps {
 export const TopHeader: React.FC<TopHeaderProps> = ({
   currentPath,
   onNavigate,
-  unreadCount = 2,
+  unreadCount = 0,
   onOpenSearch,
   onToggleMobileMenu
 }) => {

@@ -16,7 +16,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   currentPath,
   onNavigate,
   children,
-  unreadCount = 2
+  unreadCount = 0
 }) => {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);

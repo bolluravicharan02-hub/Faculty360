@@ -23,7 +23,7 @@ interface SidebarProps {
   unreadCount?: number;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unreadCount = 2 }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unreadCount = 0 }) => {
   const { user, role, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
