@@ -90,7 +90,30 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           <span className="text-[10px] mt-0.5">Home</span>
         </button>
 
-        {role === 'ADMIN' ? (
+        {role === 'STUDENT' ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onNavigate('schedule')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'schedule' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <Calendar className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Schedule</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('attendance')}
+              className={`flex flex-col items-center justify-center w-16 py-1 ${
+                currentPath === 'attendance' ? 'text-[#312e81] font-semibold' : 'text-slate-500'
+              }`}
+            >
+              <BarChart3 className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">Attendance</span>
+            </button>
+          </>
+        ) : role === 'ADMIN' ? (
           <>
             <button
               type="button"

@@ -83,4 +83,44 @@ export async function runRoleTests() {
     expect(candidateRes.status).toBe(403);
     expect(candidateRes.data.code).toBe('FORBIDDEN_ROLE');
   });
+
+  // 4. Student Permissions
+  await TestRunner.test('Student permissions: student dashboard & timetable allowed; faculty/leave/reports strictly blocked', async () => {
+    // Student dashboard allowed
+    const dashRes = await apiRequest('GET', '/api/student/dashboard', undefined, TOKENS.STUDENT);
+    expect(dashRes.status).toBe(200);
+    expect(dashRes.data.profile).toBeDefined();
+    expect(dashRes.data.overallAttendance).toBeDefined();
+    expect(Array.isArray(dashRes.data.subjectsAttendance)).toBe(true);
+
+    // Student schedule allowed
+    const schedRes = await apiRequest('GET', '/api/student/schedule', undefined, TOKENS.STUDENT);
+    expect(schedRes.status).toBe(200);
+    expect(Array.isArray(schedRes.data)).toBe(true);
+
+    // Faculty directory blocked for student
+    const facRes = await apiRequest('GET', '/api/faculty', undefined, TOKENS.STUDENT);
+    expect(facRes.status).toBe(403);
+    expect(facRes.data.code).toBe('FORBIDDEN_ROLE');
+
+    // Faculty leave endpoints blocked for student
+    const leaveRes = await apiRequest('GET', '/api/leave', undefined, TOKENS.STUDENT);
+    expect(leaveRes.status).toBe(403);
+    expect(leaveRes.data.code).toBe('FORBIDDEN_ROLE');
+
+    // Reports blocked for student
+    const reportRes = await apiRequest('GET', '/api/reports/summary', undefined, TOKENS.STUDENT);
+    expect(reportRes.status).toBe(403);
+    expect(reportRes.data.code).toBe('FORBIDDEN_ROLE');
+
+    // Audit logs blocked for student
+    const auditRes = await apiRequest('GET', '/api/audit-logs', undefined, TOKENS.STUDENT);
+    expect(auditRes.status).toBe(403);
+    expect(auditRes.data.code).toBe('FORBIDDEN_ROLE');
+
+    // Alternative class management blocked for student
+    const altRes = await apiRequest('GET', '/api/alternatives', undefined, TOKENS.STUDENT);
+    expect(altRes.status).toBe(403);
+    expect(altRes.data.code).toBe('FORBIDDEN_ROLE');
+  });
 }

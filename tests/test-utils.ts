@@ -8,6 +8,7 @@ export const TOKENS = {
   ADMIN: 'test-token-admin',
   HOD: 'test-token-hod',
   FACULTY: 'test-token-faculty',
+  STUDENT: 'test-token-student',
   PRIYA: 'test-token-priya',
   EXPIRED: 'test-token-expired',
   INVALID: 'test-token-invalid',

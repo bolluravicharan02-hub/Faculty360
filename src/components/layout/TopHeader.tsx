@@ -21,17 +21,25 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
   const getPageTitle = (path: string) => {
     switch (path) {
-      case 'home': return role === 'ADMIN' ? 'University Administration & Governance' : role === 'HOD' ? 'Department Operations & HOD Overview' : 'Faculty Academic Workspace';
+      case 'home':
+        return role === 'ADMIN'
+          ? 'University Administration & Governance'
+          : role === 'HOD'
+          ? 'Department Operations & HOD Overview'
+          : role === 'STUDENT'
+          ? 'Student Academic Portal'
+          : 'Faculty Academic Workspace';
       case 'admin_dashboard': return 'University Administration & Governance';
       case 'hod_dashboard': return 'Department Operations & HOD Overview';
-      case 'schedule': return 'Class Timetable & Schedule';
+      case 'schedule': return role === 'STUDENT' ? 'My Class Timetable' : 'Class Timetable & Schedule';
+      case 'attendance': return 'Student Attendance Records';
       case 'leave': return 'Faculty Leave Management';
       case 'classes': return 'Alternative & Substitute Classes';
       case 'reports': return 'Academic Monitoring & Reports';
       case 'faculty': return 'Faculty Directory';
-      case 'notifications': return 'System Notifications';
+      case 'notifications': return 'System Notifications & Announcements';
       case 'audit': return 'Audit Logs & Governance';
-      case 'settings': return 'Account & Academic Settings';
+      case 'settings': return 'Account & Academic Profile';
       default: return 'Academic Workspace';
     }
   };
@@ -42,6 +50,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         return 'bg-[#1a146b] text-white font-medium';
       case 'HOD':
         return 'bg-[#e2dfff] text-[#100563] font-semibold';
+      case 'STUDENT':
+        return 'bg-emerald-100 text-emerald-900 font-semibold';
       case 'FACULTY':
       default:
         return 'bg-[#e2dfff] text-[#100563] font-semibold';

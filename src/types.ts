@@ -1,4 +1,4 @@
-export type Role = 'FACULTY' | 'HOD' | 'ADMIN';
+export type Role = 'STUDENT' | 'FACULTY' | 'HOD' | 'ADMIN';
 
 export interface UserProfile {
   id: string;
@@ -11,11 +11,75 @@ export interface UserProfile {
   designation?: string;
   avatarUrl?: string;
   phone?: string;
+  studentId?: string;
+  program?: string;
+  semester?: string;
+  section?: string;
+  yearOfStudy?: string;
   leaveBalance?: {
     casual: number;
     medical: number;
     earned: number;
     total: number;
+  };
+}
+
+export interface StudentProfile {
+  id: string;
+  studentId: string;
+  userId: string;
+  name: string;
+  email: string;
+  departmentId?: string;
+  departmentName: string;
+  program: string;
+  semester: string;
+  section: string;
+  yearOfStudy: string;
+  phone?: string;
+  avatarUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StudentAttendanceRecord {
+  id: string;
+  studentId: string;
+  userId: string;
+  subjectCode: string;
+  subjectName: string;
+  classesHeld: number;
+  classesAttended: number;
+  classesAbsent: number;
+  percentage: number;
+  status: 'Good Standing' | 'Warning' | 'Critical';
+  facultyName?: string;
+}
+
+export interface StudentDashboardData {
+  profile: StudentProfile;
+  overallAttendance: {
+    totalClasses: number;
+    attended: number;
+    percentage: number;
+    status: string;
+  };
+  subjectsAttendance: StudentAttendanceRecord[];
+  todaySchedule: TimetableSlot[];
+  recentAnnouncements: {
+    id: string;
+    title: string;
+    message: string;
+    timestamp: string;
+    type: string;
+    category?: string;
+  }[];
+  academicStatus: {
+    enrollmentStatus: string;
+    currentSemester: string;
+    academicYear: string;
+    cgpa?: number;
+    totalCredits: number;
   };
 }
 
@@ -267,4 +331,64 @@ export interface AcademicLeaveType {
   defaultQuota: number;
   description?: string | null;
   requiresDocument: boolean;
+}
+
+export interface AcademicWeekDay {
+  date: string; // YYYY-MM-DD
+  dayName: string; // Mon, Tue, etc.
+  dayOfMonth: number;
+  isToday: boolean;
+  isInstructional: boolean;
+  activityLabel?: string;
+  eventNote?: string;
+}
+
+export interface AcademicWeekInfo {
+  weekNumber: number;
+  totalWeeks: number;
+  academicYear: string;
+  semesterName: string;
+  startDate: string;
+  endDate: string;
+  phaseTitle: string;
+  phaseDescription: string;
+  days: AcademicWeekDay[];
+  progressPercent: number;
+  daysRemainingInSemester: number;
+}
+
+export interface AcademicHoliday {
+  id: string;
+  name: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+  durationDays: number;
+  type: 'Gazetted' | 'National' | 'Institutional' | 'Observance';
+  description?: string;
+  daysUntil: number; // >= 0
+  isNextUpcoming: boolean;
+}
+
+export interface ExamDeadline {
+  id: string;
+  title: string;
+  deadlineDate: string; // YYYY-MM-DD or date range
+  category: 'Mid-Term Exam' | 'End-Term Exam' | 'Marks Submission' | 'Syllabus & Papers' | 'Practical / Viva';
+  priority: 'CRITICAL' | 'HIGH' | 'NORMAL';
+  affectedRoles: string[]; // e.g. ['Faculty', 'HOD', 'Students']
+  description: string;
+  daysUntil: number; // >= 0
+  isPassed: boolean;
+  statusText?: string;
+}
+
+export interface AcademicCalendarData {
+  institution: string;
+  currentSemester: string;
+  academicYear: string;
+  currentWeek: AcademicWeekInfo;
+  upcomingHolidays: AcademicHoliday[];
+  examDeadlines: ExamDeadline[];
+  totalHolidaysCount: number;
+  totalExamDeadlinesCount: number;
 }

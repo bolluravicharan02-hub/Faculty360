@@ -26,6 +26,7 @@ import {
   getCurrentDayName,
   getFormattedCurrentDate,
 } from '../config/academic';
+import { AcademicCalendarWidget } from '../components/dashboard/AcademicCalendarWidget';
 
 interface FacultyHomeProps {
   onNavigate: (path: string) => void;
@@ -40,53 +41,122 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
   const [altStatus, setAltStatus] = useState<AlternativeClassStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  const cacheKey = `faculty360_home_cache_${user?.id || 'default'}`;
+
+  // Hydrate from local cache immediately on mount
+  useEffect(() => {
+    if (!user?.id) return;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed.timetable) && parsed.timetable.length > 0) {
+          setTimetable(parsed.timetable);
+        }
+        if (parsed.altClass) {
+          setAltClass(parsed.altClass);
+          setAltStatus(parsed.altClass.status || null);
+        }
+      }
+    } catch {}
+  }, [user?.id, cacheKey]);
 
   useEffect(() => {
-    loadData();
+    if (user?.id) {
+      loadData();
+    }
   }, [user?.id]);
 
-  const loadData = async () => {
+  const loadData = async (retryAttempt = 0) => {
+    if (!user?.id) return;
     try {
-      setIsLoading(true);
+      if (retryAttempt === 0) {
+        setIsLoading(true);
+      } else {
+        setIsRetrying(true);
+      }
       setHasError(false);
       const currentDay = getCurrentDayName();
       const todayStr = new Date().toISOString().split('T')[0];
 
-      // Query real timetable slots from the database for today's sessionDate
-      const [allSlots, alts] = await Promise.all([
+      // Query real timetable slots and alternative classes in parallel with Promise.allSettled
+      const [slotsResult, altsResult] = await Promise.allSettled([
         api.getTimetable({ day: currentDay, date: todayStr, sessionDate: todayStr }),
         api.getAlternativeClasses(),
       ]);
 
-      // Filter slots for current faculty if assigned, or substituted on today's sessionDate
-      const userSlots = allSlots.filter(
-        (s) =>
-          s.facultyId === user?.id ||
-          s.substitutedBy === user?.id ||
-          (user?.facultyId && s.facultyId === user.facultyId) ||
-          (user?.facultyId && s.substitutedBy === user.facultyId)
-      );
-      setTimetable(userSlots);
+      let anySuccess = false;
+      let userSlots: TimetableSlot[] = [];
 
-      // Find substitution requested specifically for this authenticated faculty from database
-      const requested = alts.find(
-        (a) =>
-          a.assignedFacultyId === user?.id &&
-          a.status === 'OFFERED_TO_FACULTY'
-      );
+      if (slotsResult.status === 'fulfilled') {
+        anySuccess = true;
+        const allSlots = slotsResult.value;
+        userSlots = allSlots.filter(
+          (s) =>
+            s.facultyId === user?.id ||
+            s.substitutedBy === user?.id ||
+            (user?.facultyId && s.facultyId === user.facultyId) ||
+            (user?.facultyId && s.substitutedBy === user.facultyId)
+        );
+        setTimetable(userSlots);
+      }
 
-      if (requested) {
-        setAltClass(requested);
-        setAltStatus(requested.status);
+      let activeAlt: AlternativeClassAssignment | null = null;
+      if (altsResult.status === 'fulfilled') {
+        anySuccess = true;
+        const alts = altsResult.value;
+        const requested = alts.find(
+          (a) =>
+            (a.assignedFacultyId === user?.id || (user?.facultyId && a.assignedFacultyId === user.facultyId)) &&
+            a.status === 'OFFERED_TO_FACULTY'
+        );
+
+        if (requested) {
+          activeAlt = requested;
+          setAltClass(requested);
+          setAltStatus(requested.status);
+        } else {
+          setAltClass(null);
+          setAltStatus(null);
+        }
+      }
+
+      if (anySuccess) {
+        setHasError(false);
+        try {
+          localStorage.setItem(
+            cacheKey,
+            JSON.stringify({
+              timetable: userSlots.length > 0 ? userSlots : timetable,
+              altClass: activeAlt,
+              savedAt: Date.now(),
+            })
+          );
+        } catch {}
       } else {
-        setAltClass(null);
-        setAltStatus(null);
+        // Both failed: attempt auto-retry if first try
+        if (retryAttempt < 2) {
+          setTimeout(() => {
+            loadData(retryAttempt + 1);
+          }, 1200);
+          return;
+        }
+        setHasError(true);
       }
     } catch (err) {
-      console.error('Failed to load faculty home data:', err);
+      console.warn('Could not refresh faculty home data:', err);
+      if (retryAttempt < 2) {
+        setTimeout(() => {
+          loadData(retryAttempt + 1);
+        }, 1200);
+        return;
+      }
       setHasError(true);
     } finally {
       setIsLoading(false);
+      setIsRetrying(false);
     }
   };
 
@@ -155,17 +225,19 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
 
       {/* Error state with retry */}
       {hasError && (
-        <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between text-xs text-rose-800">
+        <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between text-xs text-amber-900">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-            <span>Could not refresh live schedule data from institutional database.</span>
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>Could not refresh live schedule from the database. Showing latest available view.</span>
           </div>
           <button
             type="button"
-            onClick={loadData}
-            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium transition-colors"
+            disabled={isRetrying}
+            onClick={() => loadData(0)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-medium transition-colors"
           >
-            Retry
+            {isRetrying && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            <span>{isRetrying ? 'Reconnecting...' : 'Try Again'}</span>
           </button>
         </div>
       )}
@@ -232,6 +304,9 @@ export const FacultyHome: React.FC<FacultyHomeProps> = ({ onNavigate }) => {
           </div>
         </div>
       </section>
+
+      {/* Academic Calendar Almanac Widget */}
+      <AcademicCalendarWidget onNavigate={onNavigate} className="mb-8" />
 
       {/* Asymmetric 2-Column Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

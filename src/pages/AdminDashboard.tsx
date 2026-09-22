@@ -32,6 +32,7 @@ import {
   LeaveRequest,
   AuditLog
 } from '../types';
+import { AcademicCalendarWidget } from '../components/dashboard/AcademicCalendarWidget';
 
 interface AdminDashboardProps {
   onNavigate: (path: string) => void;
@@ -427,6 +428,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           </button>
         </div>
       </div>
+
+      {/* Academic Calendar Almanac Widget */}
+      <AcademicCalendarWidget onNavigate={onNavigate} className="mb-6" />
 
       {/* 3. Department Overview Section */}
       <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-6">

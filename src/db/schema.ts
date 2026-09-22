@@ -35,6 +35,12 @@ export const users = pgTable('users', {
   designation: text('designation'),
   avatarUrl: text('avatar_url'),
   phone: text('phone'),
+  // Student Profile specific fields
+  studentId: text('student_id'),
+  program: text('program'),
+  semester: text('semester'),
+  section: text('section'),
+  yearOfStudy: text('year_of_study'),
   leaveCasual: integer('leave_casual').notNull().default(6),
   leaveMedical: integer('leave_medical').notNull().default(4),
   leaveEarned: integer('leave_earned').notNull().default(2),
@@ -45,6 +51,7 @@ export const users = pgTable('users', {
   index('idx_users_email').on(table.email),
   index('idx_users_role').on(table.role),
   index('idx_users_faculty_id').on(table.facultyId),
+  index('idx_users_student_id').on(table.studentId),
 ]);
 
 // 3. Faculty Directory Table
@@ -244,6 +251,50 @@ export const leaveTypes = pgTable('leave_types', {
   requiresDocument: boolean('requires_document').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
+
+// 12. Students Table
+export const students = pgTable('students', {
+  id: text('id').primaryKey(),
+  studentId: text('student_id').notNull().unique(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  departmentId: text('department_id').references(() => departments.id, { onDelete: 'set null' }),
+  departmentName: text('department_name').notNull(),
+  program: text('program').notNull().default('B.Tech Computer Science & Engineering'),
+  semester: text('semester').notNull().default('Semester 4'),
+  section: text('section').notNull().default('A'),
+  yearOfStudy: text('year_of_study').notNull().default('2nd Year'),
+  phone: text('phone'),
+  avatarUrl: text('avatar_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('idx_students_user').on(table.userId),
+  index('idx_students_id').on(table.studentId),
+  index('idx_students_email').on(table.email),
+  index('idx_students_dept').on(table.departmentId),
+]);
+
+// 13. Student Attendance Table
+export const studentAttendance = pgTable('student_attendance', {
+  id: text('id').primaryKey(),
+  studentId: text('student_id').notNull(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  subjectCode: text('subject_code').notNull(),
+  subjectName: text('subject_name').notNull(),
+  classesHeld: integer('classes_held').notNull().default(0),
+  classesAttended: integer('classes_attended').notNull().default(0),
+  classesAbsent: integer('classes_absent').notNull().default(0),
+  percentage: integer('percentage').notNull().default(0),
+  status: text('status').notNull().default('Good Standing'),
+  facultyName: text('faculty_name'),
+  lastUpdated: timestamp('last_updated', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('idx_student_att_user').on(table.userId),
+  index('idx_student_att_student').on(table.studentId),
+  index('idx_student_att_subject').on(table.subjectCode),
+]);
 
 // Relations
 export const departmentsRelations = relations(departments, ({ many }) => ({

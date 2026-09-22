@@ -14,6 +14,7 @@ import { FacultyDirectoryPage } from './pages/FacultyDirectoryPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { StudentDashboard } from './pages/StudentDashboard';
 import { AccessDenied } from './components/common/AccessDenied';
 import { Role } from './types';
 import { api } from './services/api';
@@ -21,13 +22,14 @@ import { GraduationCap, Loader2 } from 'lucide-react';
 
 // Strict Role route permissions
 const ROUTE_PERMISSIONS: Record<string, Role[]> = {
-  home: ['FACULTY', 'HOD', 'ADMIN'],
-  schedule: ['FACULTY', 'HOD', 'ADMIN'],
+  home: ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'],
+  schedule: ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'],
+  attendance: ['STUDENT'],
   leave: ['FACULTY', 'HOD', 'ADMIN'],
   classes: ['FACULTY', 'HOD', 'ADMIN'],
   faculty: ['FACULTY', 'HOD', 'ADMIN'],
-  notifications: ['FACULTY', 'HOD', 'ADMIN'],
-  settings: ['FACULTY', 'HOD', 'ADMIN'],
+  notifications: ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'],
+  settings: ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'],
   reports: ['HOD', 'ADMIN'],        // Restricted to HOD & Admin
   audit: ['ADMIN'],                 // Strictly Admin only
   admin_dashboard: ['ADMIN'],       // Strictly Admin only
@@ -102,6 +104,7 @@ function MainApp() {
 
     switch (currentPath) {
       case 'home':
+        if (role === 'STUDENT') return <StudentDashboard onNavigate={setCurrentPath} />;
         if (role === 'ADMIN') return <AdminDashboard onNavigate={setCurrentPath} />;
         if (role === 'HOD') return <HODDashboard onNavigate={setCurrentPath} />;
         return <FacultyHome onNavigate={setCurrentPath} />;
@@ -109,7 +112,10 @@ function MainApp() {
         return <AdminDashboard onNavigate={setCurrentPath} />;
       case 'hod_dashboard':
         return <HODDashboard onNavigate={setCurrentPath} />;
+      case 'attendance':
+        return <StudentDashboard onNavigate={setCurrentPath} initialTab="attendance" />;
       case 'schedule':
+        if (role === 'STUDENT') return <StudentDashboard onNavigate={setCurrentPath} initialTab="schedule" />;
         return <SchedulePage />;
       case 'leave':
         return <LeavePage onNavigate={setCurrentPath} />;
@@ -126,6 +132,7 @@ function MainApp() {
       case 'settings':
         return <SettingsPage />;
       default:
+        if (role === 'STUDENT') return <StudentDashboard onNavigate={setCurrentPath} />;
         if (role === 'ADMIN') return <AdminDashboard onNavigate={setCurrentPath} />;
         if (role === 'HOD') return <HODDashboard onNavigate={setCurrentPath} />;
         return <FacultyHome onNavigate={setCurrentPath} />;

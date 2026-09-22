@@ -1,13 +1,68 @@
 import { pool } from '../src/db/index.ts';
+import { supabaseServer, isSupabaseServerConfigured } from './supabase.ts';
 
 async function seedInfrastructure() {
   console.log('Seeding academic infrastructure...');
 
-  // 1. Ensure demo users
+  // 0. Ensure demo users exist in Supabase Auth
+  if (isSupabaseServerConfigured) {
+    try {
+      const demoUsers = [
+        { email: 'admin@faculty360.demo', id: 'usr-admin' },
+        { email: 'hod@faculty360.demo', id: 'usr-rajesh' },
+        { email: 'faculty@faculty360.demo', id: 'usr-arun' },
+        { email: 'student@faculty360.demo', id: 'usr-student' },
+      ];
+      const testPassword = 'Faculty360@Admin2026!';
+
+      const { data } = await supabaseServer.auth.admin.listUsers();
+      const existingUsers = data?.users || [];
+
+      for (const demo of demoUsers) {
+        const found = existingUsers.find((u) => u.email?.toLowerCase() === demo.email.toLowerCase());
+        if (!found) {
+          console.log(`Creating Supabase Auth user: ${demo.email}`);
+          const { data: created, error } = await supabaseServer.auth.admin.createUser({
+            email: demo.email,
+            password: testPassword,
+            email_confirm: true,
+          });
+          if (error) {
+            console.warn(`Could not create ${demo.email} in Supabase Auth:`, error.message);
+          } else if (created?.user?.id) {
+            await pool.query(`UPDATE users SET uid = $1 WHERE email = $2`, [created.user.id, demo.email]);
+          }
+        } else {
+          console.log(`Updating Supabase Auth user password for: ${demo.email}`);
+          await supabaseServer.auth.admin.updateUserById(found.id, { password: testPassword });
+          await pool.query(`UPDATE users SET uid = $1 WHERE email = $2`, [found.id, demo.email]);
+        }
+      }
+    } catch (authErr) {
+      console.warn('Note: Could not sync with Supabase Auth admin API:', authErr);
+    }
+  }
+
+  // 1. Ensure demo users in PostgreSQL database
   await pool.query(`
     UPDATE users SET email = 'admin@faculty360.demo' WHERE id = 'usr-admin';
     UPDATE users SET email = 'hod@faculty360.demo' WHERE id = 'usr-rajesh';
     UPDATE users SET email = 'faculty@faculty360.demo' WHERE id = 'usr-arun';
+
+    INSERT INTO users (id, uid, email, name, role, department_id, department_name, student_id, program, semester, section, year_of_study, avatar_url, phone, leave_casual, leave_medical, leave_earned, leave_total)
+    VALUES ('usr-student', '77a7055b-2143-4b90-b47c-de474eb762c4', 'student@faculty360.demo', 'Aarav Mehta', 'STUDENT', 'dept-cse', 'Department of Computer Science & Engineering', 'STU-2024-CSE-042', 'B.Tech Computer Science & Engineering', 'Semester 4', 'A', '2nd Year', 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80', '+91 98111 22334', 0, 0, 0, 0)
+    ON CONFLICT (id) DO UPDATE SET
+      email = EXCLUDED.email,
+      role = 'STUDENT',
+      student_id = EXCLUDED.student_id,
+      program = EXCLUDED.program,
+      semester = EXCLUDED.semester,
+      section = EXCLUDED.section,
+      year_of_study = EXCLUDED.year_of_study;
+
+    INSERT INTO students (id, student_id, user_id, name, email, department_id, department_name, program, semester, section, year_of_study, phone, avatar_url)
+    VALUES ('stu-aarav', 'STU-2024-CSE-042', 'usr-student', 'Aarav Mehta', 'student@faculty360.demo', 'dept-cse', 'Department of Computer Science & Engineering', 'B.Tech Computer Science & Engineering', 'Semester 4', 'A', '2nd Year', '+91 98111 22334', 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80')
+    ON CONFLICT (id) DO NOTHING;
   `);
 
   // 2. Seed Subjects

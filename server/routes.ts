@@ -2,8 +2,9 @@ import { Router, Request, Response } from 'express';
 import { eq, and, desc, sql, ilike, or, ne, inArray } from 'drizzle-orm';
 import { db } from '../src/db/index.ts';
 import * as schema from '../src/db/schema.ts';
-import { CandidateFaculty, LeaveRequest, TimetableSlot, AlternativeClassAssignment, UserProfile, Role } from '../src/types.ts';
+import { CandidateFaculty, LeaveRequest, TimetableSlot, AlternativeClassAssignment, UserProfile, Role, AcademicCalendarData } from '../src/types.ts';
 import { authenticateToken, requireRole, AuthRequest, AuthenticatedUser } from './auth.ts';
+import { getAcademicCalendarData } from '../src/config/academic.ts';
 
 export const apiRouter = Router();
 
@@ -20,7 +21,12 @@ function formatUserProfile(u: typeof schema.users.$inferSelect): UserProfile {
     designation: u.designation || undefined,
     avatarUrl: u.avatarUrl || undefined,
     phone: u.phone || undefined,
-    leaveBalance: {
+    studentId: u.studentId || undefined,
+    program: u.program || undefined,
+    semester: u.semester || undefined,
+    section: u.section || undefined,
+    yearOfStudy: u.yearOfStudy || undefined,
+    leaveBalance: u.role === 'STUDENT' ? undefined : {
       casual: u.leaveCasual,
       medical: u.leaveMedical,
       earned: u.leaveEarned,
@@ -529,6 +535,21 @@ apiRouter.get('/leave-types', authenticateToken, async (req: AuthRequest, res: R
   }
 });
 
+// ==========================================
+// ACADEMIC CALENDAR & MILESTONES
+// ==========================================
+apiRouter.get('/academic-calendar', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const dateParam = req.query.date as string | undefined;
+    const refDate = dateParam ? new Date(dateParam) : new Date();
+    const data = getAcademicCalendarData(refDate);
+    res.json(data);
+  } catch (err: any) {
+    console.error('Error computing academic calendar:', err);
+    res.status(500).json({ error: 'Failed to generate academic calendar' });
+  }
+});
+
 // Normalized department matching helper
 export const isDepartmentMatch = (deptA?: string | null, deptB?: string | null): boolean => {
   if (!deptA || !deptB) return false;
@@ -647,7 +668,7 @@ apiRouter.get('/attendance', authenticateToken, requireRole(['ADMIN', 'HOD']), a
   }
 });
 
-apiRouter.get('/faculty', authenticateToken, async (req: AuthRequest, res: Response) => {
+apiRouter.get('/faculty', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const { department, status, query } = req.query;
     const caller = req.user!;
@@ -701,7 +722,7 @@ apiRouter.get('/faculty', authenticateToken, async (req: AuthRequest, res: Respo
   }
 });
 
-apiRouter.get('/faculty/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+apiRouter.get('/faculty/:id', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const caller = req.user!;
@@ -1028,7 +1049,15 @@ apiRouter.get('/timetable', authenticateToken, async (req: AuthRequest, res: Res
 
       // Filter by role and facultyId
       let finalSlots = resolvedSlots;
-      if (caller.role === 'ADMIN') {
+      if (caller.role === 'STUDENT') {
+        const studentSem = caller.semester || 'Semester 4';
+        const studentSec = caller.section || 'A';
+        finalSlots = finalSlots.filter(
+          (s) =>
+            (!s.semester || s.semester.toLowerCase().includes(studentSem.toLowerCase()) || studentSem.toLowerCase().includes(s.semester.toLowerCase())) &&
+            (!s.section || s.section.toUpperCase() === studentSec.toUpperCase() || s.section.toUpperCase().includes(studentSec.toUpperCase()))
+        );
+      } else if (caller.role === 'ADMIN') {
         if (facultyId && facultyId !== 'All') {
           finalSlots = finalSlots.filter(
             (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
@@ -1060,7 +1089,15 @@ apiRouter.get('/timetable', authenticateToken, async (req: AuthRequest, res: Res
     // Recurring weekly timetable view (no specific date requested)
     let recurringSlots = baseSlots;
 
-    if (caller.role === 'ADMIN') {
+    if (caller.role === 'STUDENT') {
+      const studentSem = caller.semester || 'Semester 4';
+      const studentSec = caller.section || 'A';
+      recurringSlots = recurringSlots.filter(
+        (s) =>
+          (!s.semester || s.semester.toLowerCase().includes(studentSem.toLowerCase()) || studentSem.toLowerCase().includes(s.semester.toLowerCase())) &&
+          (!s.section || s.section.toUpperCase() === studentSec.toUpperCase() || s.section.toUpperCase().includes(studentSec.toUpperCase()))
+      );
+    } else if (caller.role === 'ADMIN') {
       if (facultyId && facultyId !== 'All') {
         recurringSlots = recurringSlots.filter(
           (s) => s.facultyId === String(facultyId) || s.substitutedBy === String(facultyId)
@@ -1356,12 +1393,12 @@ const fetchLeaveRequestsHandler = async (req: AuthRequest, res: Response) => {
   }
 };
 
-apiRouter.get('/leave', authenticateToken, fetchLeaveRequestsHandler);
-apiRouter.get('/leaves', authenticateToken, fetchLeaveRequestsHandler);
-apiRouter.get('/leave-requests', authenticateToken, fetchLeaveRequestsHandler);
+apiRouter.get('/leave', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), fetchLeaveRequestsHandler);
+apiRouter.get('/leaves', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), fetchLeaveRequestsHandler);
+apiRouter.get('/leave-requests', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), fetchLeaveRequestsHandler);
 
 // Endpoint to preview affected timetable classes for a potential or existing leave application
-apiRouter.get('/leave/preview-affected', authenticateToken, async (req: AuthRequest, res: Response) => {
+apiRouter.get('/leave/preview-affected', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const { facultyId, facultyName, startDate, endDate } = req.query;
 
@@ -1557,12 +1594,12 @@ const submitLeaveHandler = async (req: AuthRequest, res: Response) => {
   }
 };
 
-apiRouter.post('/leave', authenticateToken, submitLeaveHandler);
-apiRouter.post('/leaves', authenticateToken, submitLeaveHandler);
-apiRouter.post('/leave-requests', authenticateToken, submitLeaveHandler);
+apiRouter.post('/leave', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), submitLeaveHandler);
+apiRouter.post('/leaves', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), submitLeaveHandler);
+apiRouter.post('/leave-requests', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), submitLeaveHandler);
 
 // CANCEL PENDING LEAVE (Faculty applicant, or HOD/Admin)
-apiRouter.post('/leave/:id/cancel', authenticateToken, async (req: AuthRequest, res: Response) => {
+apiRouter.post('/leave/:id/cancel', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -1879,15 +1916,20 @@ const fetchAlternativeClassesHandler = async (req: AuthRequest, res: Response) =
 
     if (userRole === 'FACULTY') {
       // 3. GET /alternatives: Faculty only see records where they are original faculty or assigned substitute
+      const conditions = [
+        eq(schema.alternativeClasses.originalFacultyId, caller.id),
+        eq(schema.alternativeClasses.assignedFacultyId, caller.id),
+      ];
+      if (caller.facultyId) {
+        conditions.push(
+          eq(schema.alternativeClasses.originalFacultyId, caller.facultyId),
+          eq(schema.alternativeClasses.assignedFacultyId, caller.facultyId)
+        );
+      }
       const list = await db
         .select()
         .from(schema.alternativeClasses)
-        .where(
-          or(
-            eq(schema.alternativeClasses.originalFacultyId, caller.id),
-            eq(schema.alternativeClasses.assignedFacultyId, caller.id)
-          )
-        )
+        .where(or(...conditions))
         .orderBy(desc(schema.alternativeClasses.createdAt));
       return res.json(list);
     }
@@ -1938,8 +1980,8 @@ const fetchAlternativeClassesHandler = async (req: AuthRequest, res: Response) =
   }
 };
 
-apiRouter.get('/alternatives', authenticateToken, fetchAlternativeClassesHandler);
-apiRouter.get('/alternative-classes', authenticateToken, fetchAlternativeClassesHandler);
+apiRouter.get('/alternatives', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), fetchAlternativeClassesHandler);
+apiRouter.get('/alternative-classes', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), fetchAlternativeClassesHandler);
 
 function getDayNameFromDate(dateStr: string): string {
   if (!dateStr) return '';
@@ -2254,7 +2296,7 @@ apiRouter.post('/alternatives/:id/assign', authenticateToken, requireRole(['ADMI
 });
 
 // Assigned faculty member (or admin/HOD of that department) can accept/decline substitute classes
-apiRouter.post('/alternatives/:id/respond', authenticateToken, async (req: AuthRequest, res: Response) => {
+apiRouter.post('/alternatives/:id/respond', authenticateToken, requireRole(['FACULTY', 'HOD', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { action, reason } = req.body; // action: 'accept' | 'decline', optional reason
@@ -3320,5 +3362,258 @@ apiRouter.get('/audit-logs', authenticateToken, requireRole(['ADMIN']), async (r
   } catch (err: any) {
     console.error('Error fetching audit logs:', err);
     res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
+});
+
+// ==========================================
+// 10. STUDENT PORTAL APIS (STUDENT ONLY)
+// ==========================================
+
+// GET /api/student/dashboard
+apiRouter.get('/student/dashboard', authenticateToken, requireRole(['STUDENT']), async (req: AuthRequest, res: Response) => {
+  try {
+    const caller = req.user!;
+
+    // 1. Student profile
+    const [stuRecord] = await db
+      .select()
+      .from(schema.students)
+      .where(or(eq(schema.students.userId, caller.id), eq(schema.students.email, caller.email)));
+
+    const profile = {
+      id: stuRecord?.id || 'stu-aarav',
+      studentId: stuRecord?.studentId || caller.studentId || 'STU-2024-CSE-042',
+      userId: caller.id,
+      name: stuRecord?.name || caller.name,
+      email: stuRecord?.email || caller.email,
+      departmentId: stuRecord?.departmentId || caller.departmentId || 'dept-cse',
+      departmentName: stuRecord?.departmentName || caller.departmentName || 'Department of Computer Science & Engineering',
+      program: stuRecord?.program || caller.program || 'B.Tech Computer Science & Engineering',
+      semester: stuRecord?.semester || caller.semester || 'Semester 4',
+      section: stuRecord?.section || caller.section || 'A',
+      yearOfStudy: stuRecord?.yearOfStudy || caller.yearOfStudy || '2nd Year',
+      phone: stuRecord?.phone || caller.phone || '+91 98111 22334',
+      avatarUrl: stuRecord?.avatarUrl || caller.avatarUrl || 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80',
+    };
+
+    // 2. Attendance records for student
+    const attendanceRecords = await db
+      .select()
+      .from(schema.studentAttendance)
+      .where(or(eq(schema.studentAttendance.userId, caller.id), eq(schema.studentAttendance.studentId, profile.studentId)));
+
+    let totalHeld = 0;
+    let totalAttended = 0;
+    const formattedAttendance = attendanceRecords.map((a) => {
+      totalHeld += a.classesHeld;
+      totalAttended += a.classesAttended;
+      return {
+        id: a.id,
+        studentId: a.studentId,
+        userId: a.userId,
+        subjectCode: a.subjectCode,
+        subjectName: a.subjectName,
+        classesHeld: a.classesHeld,
+        classesAttended: a.classesAttended,
+        classesAbsent: a.classesAbsent,
+        percentage: a.percentage,
+        status: (a.percentage >= 75 ? 'Good Standing' : a.percentage >= 65 ? 'Warning' : 'Critical') as any,
+        facultyName: a.facultyName || undefined,
+      };
+    });
+
+    const overallPct = totalHeld > 0 ? Math.round((totalAttended / totalHeld) * 1000) / 10 : 90.0;
+    const overallAttendance = {
+      totalClasses: totalHeld,
+      attended: totalAttended,
+      percentage: overallPct,
+      status: overallPct >= 75 ? 'Good Standing' : 'Shortage Risk',
+    };
+
+    // 3. Today's schedule
+    const now = new Date();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const currentDay = days[now.getDay()];
+    const todaySchedule = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(
+        and(
+          eq(schema.timetableSlots.dayOfWeek, currentDay === 'Sunday' ? 'Monday' : currentDay),
+          or(
+            ilike(schema.timetableSlots.semester, `%${profile.semester}%`),
+            eq(schema.timetableSlots.semester, profile.semester)
+          ),
+          or(
+            eq(schema.timetableSlots.section, profile.section),
+            ilike(schema.timetableSlots.section, `%${profile.section}%`)
+          )
+        )
+      )
+      .orderBy(schema.timetableSlots.startTime);
+
+    // 4. Announcements / Notifications for student
+    const recentAnnouncements = [
+      {
+        id: 'ann-1',
+        title: 'Mid-Semester Examination Schedule Published',
+        message: 'Mid-term exams for Semester 4 begin on October 15, 2026. Hall tickets will be available next week.',
+        timestamp: '2 hours ago',
+        type: 'exam',
+        category: 'Examination',
+      },
+      {
+        id: 'ann-2',
+        title: 'Tech Fest 2026: Project Demonstrations Registration',
+        message: 'Annual National Science & Engineering Symposium registrations are now open for B.Tech students.',
+        timestamp: '1 day ago',
+        type: 'event',
+        category: 'Department Event',
+      },
+      {
+        id: 'ann-3',
+        title: 'Library Extended Hours During Review Week',
+        message: 'Central Library reading rooms will remain open 24/7 during pre-exam preparation week.',
+        timestamp: '3 days ago',
+        type: 'library',
+        category: 'Campus Facilities',
+      }
+    ];
+
+    // 5. Academic status
+    const academicStatus = {
+      enrollmentStatus: 'Active Enrollment - Good Standing',
+      currentSemester: profile.semester,
+      academicYear: '2025-2026',
+      cgpa: 8.74,
+      totalCredits: 78,
+    };
+
+    res.json({
+      profile,
+      overallAttendance,
+      subjectsAttendance: formattedAttendance,
+      todaySchedule,
+      recentAnnouncements,
+      academicStatus,
+    });
+  } catch (err: any) {
+    console.error('Error fetching student dashboard:', err);
+    res.status(500).json({ error: 'Failed to fetch student dashboard data' });
+  }
+});
+
+// GET /api/student/schedule
+apiRouter.get('/student/schedule', authenticateToken, requireRole(['STUDENT']), async (req: AuthRequest, res: Response) => {
+  try {
+    const caller = req.user!;
+    const { day } = req.query;
+    const studentSem = caller.semester || 'Semester 4';
+    const studentSec = caller.section || 'A';
+
+    const conditions = [
+      or(
+        ilike(schema.timetableSlots.semester, `%${studentSem}%`),
+        eq(schema.timetableSlots.semester, studentSem)
+      ),
+      or(
+        eq(schema.timetableSlots.section, studentSec),
+        ilike(schema.timetableSlots.section, `%${studentSec}%`)
+      )
+    ];
+
+    if (day && day !== 'All') {
+      conditions.push(eq(schema.timetableSlots.dayOfWeek, String(day)));
+    }
+
+    const slots = await db
+      .select()
+      .from(schema.timetableSlots)
+      .where(and(...conditions))
+      .orderBy(schema.timetableSlots.startTime);
+
+    res.json(slots);
+  } catch (err: any) {
+    console.error('Error fetching student schedule:', err);
+    res.status(500).json({ error: 'Failed to fetch student schedule' });
+  }
+});
+
+// GET /api/student/attendance
+apiRouter.get('/student/attendance', authenticateToken, requireRole(['STUDENT']), async (req: AuthRequest, res: Response) => {
+  try {
+    const caller = req.user!;
+    const records = await db
+      .select()
+      .from(schema.studentAttendance)
+      .where(or(eq(schema.studentAttendance.userId, caller.id), eq(schema.studentAttendance.studentId, caller.studentId || 'STU-2024-CSE-042')));
+
+    let totalHeld = 0;
+    let totalAttended = 0;
+    const formatted = records.map((a) => {
+      totalHeld += a.classesHeld;
+      totalAttended += a.classesAttended;
+      return {
+        id: a.id,
+        studentId: a.studentId,
+        userId: a.userId,
+        subjectCode: a.subjectCode,
+        subjectName: a.subjectName,
+        classesHeld: a.classesHeld,
+        classesAttended: a.classesAttended,
+        classesAbsent: a.classesAbsent,
+        percentage: a.percentage,
+        status: a.percentage >= 75 ? 'Good Standing' : a.percentage >= 65 ? 'Warning' : 'Critical',
+        facultyName: a.facultyName || 'Department Faculty',
+      };
+    });
+
+    const overallPct = totalHeld > 0 ? Math.round((totalAttended / totalHeld) * 1000) / 10 : 90.0;
+
+    res.json({
+      overall: {
+        totalHeld,
+        totalAttended,
+        percentage: overallPct,
+        status: overallPct >= 75 ? 'Good Standing' : 'Shortage Risk',
+        requiredMinimum: 75,
+      },
+      subjects: formatted,
+    });
+  } catch (err: any) {
+    console.error('Error fetching student attendance:', err);
+    res.status(500).json({ error: 'Failed to fetch student attendance' });
+  }
+});
+
+// GET /api/student/profile
+apiRouter.get('/student/profile', authenticateToken, requireRole(['STUDENT']), async (req: AuthRequest, res: Response) => {
+  try {
+    const caller = req.user!;
+    const [stu] = await db
+      .select()
+      .from(schema.students)
+      .where(or(eq(schema.students.userId, caller.id), eq(schema.students.email, caller.email)));
+
+    const profile = {
+      id: stu?.id || 'stu-aarav',
+      studentId: stu?.studentId || caller.studentId || 'STU-2024-CSE-042',
+      userId: caller.id,
+      name: stu?.name || caller.name,
+      email: stu?.email || caller.email,
+      departmentId: stu?.departmentId || caller.departmentId || 'dept-cse',
+      departmentName: stu?.departmentName || caller.departmentName || 'Department of Computer Science & Engineering',
+      program: stu?.program || caller.program || 'B.Tech Computer Science & Engineering',
+      semester: stu?.semester || caller.semester || 'Semester 4',
+      section: stu?.section || caller.section || 'A',
+      yearOfStudy: stu?.yearOfStudy || caller.yearOfStudy || '2nd Year',
+      phone: stu?.phone || caller.phone || '+91 98111 22334',
+      avatarUrl: stu?.avatarUrl || caller.avatarUrl || 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80',
+    };
+
+    res.json(profile);
+  } catch (err: any) {
+    console.error('Error fetching student profile:', err);
+    res.status(500).json({ error: 'Failed to fetch student profile' });
   }
 });

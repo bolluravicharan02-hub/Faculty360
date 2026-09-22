@@ -27,10 +27,24 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unrea
   const { user, role, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = React.useState(false);
 
-  const roleTitle = role === 'ADMIN' ? 'University Administrator' : role === 'HOD' ? 'Head of Department' : 'Faculty Member';
+  const roleTitle = role === 'ADMIN' ? 'University Administrator' : role === 'HOD' ? 'Head of Department' : role === 'STUDENT' ? 'Enrolled Student' : 'Faculty Member';
 
   // Role-specific navigation definitions
   const { mainNavItems, secondaryNavItems } = React.useMemo(() => {
+    if (role === 'STUDENT') {
+      return {
+        mainNavItems: [
+          { path: 'home', label: 'Student Portal', icon: Home },
+          { path: 'schedule', label: 'My Timetable', icon: Calendar },
+          { path: 'attendance', label: 'Attendance Status', icon: BarChart3 },
+        ],
+        secondaryNavItems: [
+          { path: 'notifications', label: 'Notifications', icon: Bell, badge: unreadCount > 0 },
+          { path: 'settings', label: 'My Profile & Settings', icon: Settings },
+        ],
+      };
+    }
+
     if (role === 'ADMIN') {
       return {
         mainNavItems: [
@@ -110,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate, unrea
                   {roleTitle}
                 </span>
                 <span className="text-[10px] text-slate-500 truncate max-w-[130px]">
-                  {user?.departmentName || 'Academic Staff'}
+                  {role === 'STUDENT' ? (user?.program || user?.departmentName || 'Student') : (user?.departmentName || 'Academic Staff')}
                 </span>
               </div>
             </div>

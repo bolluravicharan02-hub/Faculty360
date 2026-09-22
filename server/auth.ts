@@ -15,6 +15,13 @@ export interface AuthenticatedUser {
   departmentId?: string;
   departmentName?: string;
   designation?: string;
+  phone?: string;
+  avatarUrl?: string;
+  studentId?: string;
+  program?: string;
+  semester?: string;
+  section?: string;
+  yearOfStudy?: string;
 }
 
 export interface AuthRequest extends Request {
@@ -89,10 +96,11 @@ export async function authenticateToken(req: AuthRequest, res: Response, next: N
       }
     }
 
-    if (!dbUser || !dbUser.role) {
+    const validRoles: Role[] = ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'];
+    if (!dbUser || !dbUser.role || !validRoles.includes(dbUser.role as Role)) {
       return res.status(403).json({
-        error: 'Access Denied: No active university profile registered for this account. Please contact your Academic Administrator.',
-        code: 'NO_PROFILE',
+        error: 'Your account is not registered with an active university role. Please contact the administrator.',
+        code: 'INVALID_ROLE',
         email: sbUser.email,
       });
     }
@@ -117,6 +125,11 @@ export async function authenticateToken(req: AuthRequest, res: Response, next: N
       departmentId: dbUser.departmentId || undefined,
       departmentName: dbUser.departmentName || undefined,
       designation: dbUser.designation || undefined,
+      studentId: dbUser.studentId || undefined,
+      program: dbUser.program || undefined,
+      semester: dbUser.semester || undefined,
+      section: dbUser.section || undefined,
+      yearOfStudy: dbUser.yearOfStudy || undefined,
     };
 
     return next();

@@ -31,6 +31,7 @@ import {
   FacultyMember
 } from '../types';
 import { ACADEMIC_CONFIG } from '../config/academic';
+import { AcademicCalendarWidget } from '../components/dashboard/AcademicCalendarWidget';
 
 interface HODDashboardProps {
   onNavigate: (path: string) => void;
@@ -312,6 +313,9 @@ export const HODDashboard: React.FC<HODDashboardProps> = ({ onNavigate }) => {
           </div>
         </div>
       </section>
+
+      {/* Academic Calendar Almanac Widget */}
+      <AcademicCalendarWidget onNavigate={onNavigate} className="mb-8" />
 
       {/* 2-Column Split */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

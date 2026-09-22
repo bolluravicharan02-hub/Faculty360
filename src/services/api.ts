@@ -13,13 +13,51 @@ import {
   Classroom,
   AcademicLeaveType,
   ClassSession,
+  AcademicCalendarData,
+  StudentProfile,
+  StudentAttendanceRecord,
+  StudentDashboardData,
 } from '../types';
+import { getAcademicCalendarData } from '../config/academic';
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'faculty360_auth_token';
 
 let authToken: string | null = typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
 let unauthorizedHandler: (() => void) | null = null;
+
+// Resilient fetch wrapper with retry and exponential backoff for network/gateway transient drops
+async function resilientFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const isIdempotent = !init?.method || init.method.toUpperCase() === 'GET' || init.method.toUpperCase() === 'HEAD';
+  const maxRetries = isIdempotent ? 2 : 0;
+  let attempt = 0;
+  let lastError: any = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      const nativeFetch = typeof window !== 'undefined' ? window.fetch.bind(window) : globalThis.fetch;
+      const res = await nativeFetch(input, init);
+      // Retry transient gateway or server cold restart status codes on idempotent queries
+      if (isIdempotent && [502, 503, 504].includes(res.status) && attempt < maxRetries) {
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 400));
+        continue;
+      }
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      if (isIdempotent && attempt < maxRetries) {
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 400));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
+const fetch = resilientFetch;
 
 function getHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
@@ -607,5 +645,62 @@ export const api = {
       headers: getHeaders(),
     });
     return handleResponse<AcademicLeaveType[]>(res, 'Failed to fetch leave types');
+  },
+
+  // Academic Calendar & Milestones
+  async getAcademicCalendar(date?: string): Promise<AcademicCalendarData> {
+    try {
+      const url = date ? `${API_BASE}/academic-calendar?date=${encodeURIComponent(date)}` : `${API_BASE}/academic-calendar`;
+      const res = await fetch(url, {
+        headers: getHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to fetch academic calendar: ${res.statusText}`);
+      }
+      return await res.json();
+    } catch (err) {
+      console.warn('Falling back to local academic calendar config:', err);
+      const refDate = date ? new Date(date) : new Date();
+      return getAcademicCalendarData(refDate);
+    }
+  },
+
+  // Student Portal APIs
+  async getStudentDashboard(): Promise<StudentDashboardData> {
+    const res = await fetch(`${API_BASE}/student/dashboard`, {
+      headers: getHeaders(),
+    });
+    return handleResponse<StudentDashboardData>(res, 'Failed to fetch student dashboard');
+  },
+
+  async getStudentSchedule(day?: string): Promise<TimetableSlot[]> {
+    const url = day && day !== 'All' ? `${API_BASE}/student/schedule?day=${encodeURIComponent(day)}` : `${API_BASE}/student/schedule`;
+    const res = await fetch(url, {
+      headers: getHeaders(),
+    });
+    return handleResponse<TimetableSlot[]>(res, 'Failed to fetch student schedule');
+  },
+
+  async getStudentAttendance(): Promise<{
+    overall: {
+      totalHeld: number;
+      totalAttended: number;
+      percentage: number;
+      status: string;
+      requiredMinimum: number;
+    };
+    subjects: StudentAttendanceRecord[];
+  }> {
+    const res = await fetch(`${API_BASE}/student/attendance`, {
+      headers: getHeaders(),
+    });
+    return handleResponse<any>(res, 'Failed to fetch student attendance');
+  },
+
+  async getStudentProfile(): Promise<StudentProfile> {
+    const res = await fetch(`${API_BASE}/student/profile`, {
+      headers: getHeaders(),
+    });
+    return handleResponse<StudentProfile>(res, 'Failed to fetch student profile');
   },
 };

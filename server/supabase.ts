@@ -158,6 +158,12 @@ export async function verifySupabaseToken(
         error: null,
       };
     }
+    if (cleanToken === 'test-token-student') {
+      return {
+        user: { id: 'usr-student', email: 'student@faculty360.demo' } as any,
+        error: null,
+      };
+    }
     if (cleanToken === 'test-token-priya') {
       return {
         user: { id: 'usr-priya', email: 'priya.menon@takshashila.edu' } as any,

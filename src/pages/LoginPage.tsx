@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   KeyRound,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
@@ -213,49 +214,90 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
                   )}
                 </button>
 
-                {/* Quick-Fill Demo Credentials */}
-                <div className="pt-2 border-t border-slate-100 mt-1">
-                  <div className="text-[11px] font-medium text-slate-500 mb-1.5 flex items-center justify-between">
-                    <span>Quick-Fill Test Accounts:</span>
-                    <span className="font-mono text-[10px] text-slate-400">PW: Faculty360@Admin2026!</span>
+                {/* Trial / Demo Logins */}
+                <div className="pt-3 border-t border-slate-100 mt-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Trial Institutional Logins</span>
+                    </div>
+                    <span className="font-mono text-[10px] text-slate-400">Click to fill</span>
                   </div>
-                  <div className="grid grid-cols-3 gap-1.5">
+
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      id="demo-admin-fill-btn"
+                      id="trial-login-admin-btn"
                       onClick={() => {
                         setEmail('admin@faculty360.demo');
                         setPassword('Faculty360@Admin2026!');
                         setFormError(null);
                       }}
-                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                      className="p-2.5 text-left rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-indigo-50/60 hover:border-indigo-200 transition-all cursor-pointer group"
                     >
-                      Admin
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-xs font-semibold text-slate-800 group-hover:text-indigo-900">Admin</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-indigo-100/70 text-indigo-700 font-medium">Governance</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono truncate">admin@faculty360.demo</p>
                     </button>
+
                     <button
                       type="button"
-                      id="demo-hod-fill-btn"
+                      id="trial-login-hod-btn"
                       onClick={() => {
                         setEmail('hod@faculty360.demo');
                         setPassword('Faculty360@Admin2026!');
                         setFormError(null);
                       }}
-                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                      className="p-2.5 text-left rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-indigo-50/60 hover:border-indigo-200 transition-all cursor-pointer group"
                     >
-                      HOD
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-xs font-semibold text-slate-800 group-hover:text-indigo-900">HOD</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-blue-100/70 text-blue-700 font-medium">CS Dept</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono truncate">hod@faculty360.demo</p>
                     </button>
+
                     <button
                       type="button"
-                      id="demo-faculty-fill-btn"
+                      id="trial-login-faculty-btn"
                       onClick={() => {
                         setEmail('faculty@faculty360.demo');
                         setPassword('Faculty360@Admin2026!');
                         setFormError(null);
                       }}
-                      className="px-2 py-1.5 text-xs font-medium bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-700 rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors text-center"
+                      className="p-2.5 text-left rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-indigo-50/60 hover:border-indigo-200 transition-all cursor-pointer group"
                     >
-                      Faculty
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-xs font-semibold text-slate-800 group-hover:text-indigo-900">Faculty</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-purple-100/70 text-purple-700 font-medium">Dr. Arun</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono truncate">faculty@faculty360.demo</p>
                     </button>
+
+                    <button
+                      type="button"
+                      id="trial-login-student-btn"
+                      onClick={() => {
+                        setEmail('student@faculty360.demo');
+                        setPassword('Faculty360@Admin2026!');
+                        setFormError(null);
+                      }}
+                      className="p-2.5 text-left rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-emerald-50/60 hover:border-emerald-200 transition-all cursor-pointer group"
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-xs font-semibold text-slate-800 group-hover:text-emerald-900">Student</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-100/70 text-emerald-700 font-medium">Portal</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono truncate">student@faculty360.demo</p>
+                    </button>
+                  </div>
+
+                  <div className="mt-2 text-center">
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Universal Trial Password: <strong className="text-slate-600 font-semibold">Faculty360@Admin2026!</strong>
+                    </span>
                   </div>
                 </div>
               </form>

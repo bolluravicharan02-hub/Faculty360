@@ -77,20 +77,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         api.setToken(session.access_token);
         const profile = await api.getCurrentUser();
 
-        if (profile && profile.role) {
+        if (profile && profile.role && ['STUDENT', 'FACULTY', 'HOD', 'ADMIN'].includes(profile.role)) {
           setUser(profile);
           localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(profile));
         } else {
-          // Account has no university profile: deny access and sign out
+          // Account has no valid university role: deny access and sign out
           await logout();
-          setError('Access Denied: No registered university profile found for this account.');
+          setError('Your account is not registered with an active university role.');
         }
       } catch (err: any) {
         console.warn('Authentication verification failed on initial load:', err);
         await logout();
-        if (err?.code === 'FORBIDDEN_ROLE' || err?.code === 'NO_PROFILE') {
-          setError(err.message || 'Access Denied: Unrecognized academic credentials.');
-        }
+        setError(err.message || 'Your account is not registered with an active university role.');
       } finally {
         setIsLoading(false);
       }
@@ -146,10 +144,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // 3. Fetch user profile and institutional role from the university database
       const profile = await api.getCurrentUser();
 
-      if (!profile || !profile.role) {
+      if (!profile || !profile.role || !['STUDENT', 'FACULTY', 'HOD', 'ADMIN'].includes(profile.role)) {
         await supabase.auth.signOut();
         api.setToken(null);
-        throw new Error('Access Denied: No active academic profile registered for this account.');
+        throw new Error('Your account is not registered with an active university role.');
       }
 
       setUser(profile);
@@ -191,6 +189,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       case 'apply_leave':
       case 'respond_substitute':
+        return role === 'FACULTY' || role === 'HOD' || role === 'ADMIN';
+
+      case 'view_student_portal':
+        return role === 'STUDENT';
+
       case 'view_schedule':
       case 'view_notifications':
         return true; // All authenticated roles
